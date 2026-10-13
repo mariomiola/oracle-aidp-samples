@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+targets.json
+connectivity*.json
+*.html
+.ipynb_checkpoints/
