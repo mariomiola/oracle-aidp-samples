@@ -52,6 +52,14 @@ list generates no network traffic. Python 3.9+ is required.
 The checks identify DNS, expected mapping, TCP, TLS, and optional Oracle client
 issues. They do not change network configuration. A failed attempt provides
 evidence and investigation hints, rather than a definitive network root cause.
+
+Use the [customer runbook](RUNBOOK.md) for diagnosis, correction by the right
+owner, and recovery checks. Keep that file alongside the notebook or open it
+from the sample repository. Output labels separate **Customer** actions from
+conditional **Oracle Support** investigations, with a runbook section reference.
+You can review your permitted workspace/customer-network resources; AIDP
+service-network CoreDNS, internal NSGs and RCE/proxy administration require
+Oracle Support. The probes do not inspect those controls.
 """),
         cell("markdown", """## 1. Configure endpoints
 
@@ -60,10 +68,9 @@ endpoint hostname, the chosen listener port, and `tcps`; select `tls_mode` as
 `tls` or `mtls`. Oracle documents mTLS on 1522 and TLS on 1521 or 1522 depending
 on the connection information. [ADB connection details](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/connect-download-wallet.html)
 
-`expected_ips` is optional and must contain the complete set of runtime-visible
-addresses, including RCE NAT or SCAN proxy addresses when applicable. Leave it
-empty to observe DNS without asserting an expected mapping. Do not compare
-synthetic runtime addresses with backend customer IPs.
+`expected_ips` is optional: leave it empty unless the complete runtime-visible
+set is confirmed. Ask Oracle Support when service-side mappings are unavailable
+to you; backend customer IPs may differ. Omit `expected_dns_count` when unknown.
 
 For `kind: "scan"`, optionally list known listener VIPs/FQDNs and ports in
 `redirect_targets`. These are supplemental probes. AIDP SCAN proxy DNS can
@@ -158,7 +165,11 @@ def show_summary(result, max_rows=40):
     for row in rows[:max_rows]:
         print("sample", row.get("sample_index", 1), row["status"], row["endpoint"], row["stage"], row["code"], row.get("ip", ""))
         if row.get("next_step"):
-            print("  ", row["next_step"])
+            print("  Customer:", row["next_step"])
+        if row.get("support_next_step"):
+            print("  Oracle Support:", row["support_next_step"])
+        if row.get("runbook_ref"):
+            print("  Runbook:", row["runbook_ref"])
     if len(rows) > max_rows:
         print("Display truncated; all", len(rows), "checks are retained in the report variable and JSON export.")
 
@@ -224,11 +235,17 @@ else:
 """),
         cell("markdown", """## 5. Export evidence and interpret results
 
-DNS failures point to resolver/view/forwarder investigations. Mapping mismatches
-require current runtime-visible RCE/SCAN expectations. TCP timeouts can involve
-listeners, PE/RCE, NSGs, routes, or the remote return path; on-premises adds DRG,
-VPN/FastConnect, and corporate DNS. Certificate failures require trust/hostname
-checks. Oracle codes distinguish account, service, client, and network issues.
+Start with the failed stage's [runbook section](RUNBOOK.md). Verify your endpoint
+and client settings, then involve the customer network/database/workspace owner
+for resources they control. Customer NSGs/routes and AIDP service-network NSGs
+are different controls. After customer checks pass, Oracle Support can inspect
+service-managed DNS/CoreDNS, attachment, routing and RCE/SCAN proxy state.
+Unverified internal mappings are not required customer inputs.
+
+Retain before/after reports and rerun the original operation in the affected
+runtime. A socket or one database connection does not prove catalog, job or AI
+Compute recovery. The [Support handoff template](RUNBOOK.md#support) lists
+customer-visible identifiers and evidence; service-internal access is not needed.
 
 SCAN redirects remain unverified until an Oracle client connection succeeds.
 One successful connection cannot validate every node or failover path. Raw
@@ -252,7 +269,7 @@ else:
     notebook = dict(cells=cells, metadata={
         "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
         "language_info": {"name": "python", "version": "3.9"},
-        "aidp_diagnostics": {"source": "shared-utils/private-network-diagnostics/ai_compute_network_diagnostics.py", "version": "1.1"},
+        "aidp_diagnostics": {"source": "shared-utils/private-network-diagnostics/ai_compute_network_diagnostics.py", "version": "1.2"},
     }, nbformat=4, nbformat_minor=5)
     try:
         import nbformat

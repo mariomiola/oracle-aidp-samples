@@ -71,6 +71,69 @@ def listener(tls_context=None):
 
 
 class DiagnosticsTest(unittest.TestCase):
+    def test_dns_failure_separates_customer_action_from_service_investigation(self):
+        with mock.patch.object(diagnostics, "child_json", return_value={"error": "DNS_ERROR"}):
+            report = diagnostics.run_diagnostics(config())
+        row = report["checks"][0]
+        self.assertEqual(row["runbook_ref"], "RUNBOOK.md#dns")
+        self.assertIn("customer VCN", row["next_step"])
+        self.assertNotIn("CoreDNS", row["next_step"])
+        self.assertIn("service-managed DNS/CoreDNS", row["support_next_step"])
+        with contextlib.redirect_stdout(__import__("io").StringIO()) as output:
+            diagnostics.print_report(report)
+        self.assertIn("Customer:", output.getvalue())
+        self.assertIn("Oracle Support:", output.getvalue())
+        self.assertIn("Runbook: RUNBOOK.md#dns", output.getvalue())
+        self.assertNotIn("CoreDNS", next(line for line in output.getvalue().splitlines() if "Customer:" in line))
+
+    def test_tcp_timeout_routes_internal_nsg_checks_to_support(self):
+        with mock.patch.object(diagnostics, "child_json", return_value={"addresses": [["IPv4", "127.0.0.1"]]}), \
+                mock.patch.object(diagnostics.socket, "socket") as factory:
+            factory.return_value.__enter__.return_value.connect.side_effect = socket.timeout()
+            report = diagnostics.run_diagnostics(config())
+        row = next(c for c in report["checks"] if c["code"] == "TCP_TIMEOUT")
+        self.assertEqual(row["runbook_ref"], "RUNBOOK.md#tcp")
+        self.assertIn("customer-owned", row["next_step"])
+        self.assertNotIn("service-managed NSGs", row["next_step"])
+        self.assertIn("service-managed NSGs", row["support_next_step"])
+
+    def test_unclassified_oracle_error_preserves_code_and_avoids_guessed_remedy(self):
+        cfg = config(oracle={"user_env": "TEST_DB_USER", "password_env": "TEST_DB_PASSWORD", "service_name_env": "TEST_DB_SERVICE"})
+        with mock.patch.object(diagnostics, "probe_endpoint", return_value=[]), \
+                mock.patch.object(diagnostics, "child_json", return_value={"status": "FAIL", "code": "DPY-9999"}):
+            report = diagnostics.run_diagnostics(cfg, oracle_probe=True)
+        row = report["checks"][0]
+        self.assertEqual(row["code"], "DPY-9999")
+        self.assertEqual(row["runbook_ref"], "RUNBOOK.md#unclassified")
+        self.assertIn("does not identify a cause", row["next_step"])
+        self.assertIn("underlying error", row["support_next_step"])
+
+    def test_runbook_references_resolve_to_written_customer_procedures(self):
+        text = (DIRECTORY / "RUNBOOK.md").read_text()
+        for section in set(diagnostics.RUNBOOK_SECTIONS.values()):
+            with self.subTest(section=section):
+                self.assertIn('<a id="' + section + '"></a>', text)
+        for section in ("ownership", "workspace", "recovery", "support"):
+            self.assertIn('<a id="' + section + '"></a>', text)
+        self.assertIn("within one invocation", text)
+        self.assertIn("service-managed database", text)
+
+    def test_notebook_summary_displays_both_owners_and_runbook_reference(self):
+        notebook = json.loads((DIRECTORY / "AIDP_Compute_Private_Network_Diagnostics.ipynb").read_text())
+        source = next("".join(c["source"]) for c in notebook["cells"] if "def show_summary(" in "".join(c["source"]))
+        namespace = dict(CONFIG_PATH=None, CONFIG={"endpoints": []}, RUNTIME_LABEL="test",
+                         RUN_ORACLE_PROBE=False, REPEAT_SAMPLES=1, SAMPLE_INTERVAL_SECONDS=0,
+                         Path=Path, json=json, validate_config=diagnostics.validate_config,
+                         run_samples=diagnostics.run_samples)
+        with mock.patch.object(diagnostics, "child_json", return_value={"error": "DNS_ERROR"}):
+            report = diagnostics.run_diagnostics(config())
+        with contextlib.redirect_stdout(__import__("io").StringIO()) as output:
+            exec(compile(source, "summary-cell", "exec"), namespace)
+            namespace["show_summary"](report)
+        self.assertIn("Customer:", output.getvalue())
+        self.assertIn("Oracle Support:", output.getvalue())
+        self.assertIn("Runbook: RUNBOOK.md#dns", output.getvalue())
+
     def test_sampling_retains_failure_after_recovery(self):
         responses = [{"error": "DNS_ERROR", "errno": -2},
                      {"addresses": [["IPv4", "127.0.0.1"]]}]
@@ -315,6 +378,7 @@ def connect(**kwargs):
 
     def test_notebook_embeds_script_and_executes_without_targets(self):
         notebook = json.loads((DIRECTORY / "AIDP_Compute_Private_Network_Diagnostics.ipynb").read_text())
+        self.assertEqual(notebook["metadata"]["aidp_diagnostics"]["version"], diagnostics.VERSION)
         self.assertEqual((notebook["nbformat"], notebook["nbformat_minor"]), (4, 5))
         self.assertEqual(len({c["id"] for c in notebook["cells"]}), len(notebook["cells"]))
         source = (DIRECTORY / "ai_compute_network_diagnostics.py").read_text().split('\nif __name__ == "__main__":')[0] + "\n"

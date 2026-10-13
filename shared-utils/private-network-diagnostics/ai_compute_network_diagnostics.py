@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "1.1"
+VERSION = "1.2"
 DNS_CODE = r'''
 import json, socket, sys
 host, port = json.load(sys.stdin)
@@ -92,36 +92,78 @@ except Exception as error:
     print(json.dumps({"status": "FAIL", "code": code}))
 '''
 
+# next_step is a customer action; managed-service investigations are separate.
 HINTS = {
-    "DNS_ERROR": "Check the exact FQDN, customer VCN DNS views/forwarding, on-prem resolver path, and workspace DNS proxy/CoreDNS mapping.",
-    "DNS_TIMEOUT": "The runtime resolver did not finish within the deadline; check DNS proxy/forwarders and resolver reachability.",
-    "DNS_EXPECTATION_MISMATCH": "Compare runtime-visible IPs with current RCE NAT/SCAN proxy mappings, not backend customer IPs. Check stale DNS or incomplete mappings.",
-    "DNS_COUNT_MISMATCH": "Check the configured expected answer count. A SCAN proxy can expose one IP while direct SCAN DNS can expose several.",
-    "TCP_TIMEOUT": "Check workspace PE/RCE state, listener port, subnet/NSG/security-list rules, and routing. For on-prem check DRG, VPN/FastConnect, and return routes. Timeout alone does not locate the fault.",
-    "TCP_REFUSED": "An active rejection was received; check the listener/port and firewall reject rules.",
-    "TCP_NO_ROUTE": "Check local routes, PE/RCE routing, and remote/return routes; this result alone does not identify the missing route.",
-    "IPV6_SOURCE_UNAVAILABLE": "AAAA was resolved but this runtime could not originate IPv6. IPv6 reachability remains unverified.",
-    "TLS_VERIFY_FAILED": "Check server hostname/certificate, trust chain, runtime clock, and wallet/CA configuration. TCP was reached; database authentication remains unverified.",
-    "TLS_FAILED": "Check TCPS listener selection, TLS policy, wallet/client-certificate requirements, and possible Oracle Net negotiation. A raw TLS probe is not an Oracle client.",
-    "MTLS_WALLET_UNVERIFIED": "The raw TLS probe does not load an Oracle wallet. Use the optional Oracle client probe with the correct runtime wallet to validate mTLS.",
-    "SCAN_REDIRECT_UNVERIFIED": "SCAN socket reachability does not exercise Oracle listener redirection. Review workspace SCAN proxy name/port and run the Oracle client probe. Supplied VIP checks are supplemental.",
-    "ORACLE_DRIVER_MISSING": "Install an approved python-oracledb version in this runtime to enable the optional database probe.",
-    "ORACLE_ENV_MISSING": "Supply configured environment values through the runtime secret mechanism; do not place secret values in the notebook or target JSON.",
-    "ORACLE_PROBE_NOT_CONFIGURED": "Oracle validation was requested, but this endpoint has no oracle settings. Add environment variable references or run network-only checks.",
-    "ORACLE_RETRY_SUPPRESSED": "An earlier sample failed authentication or account validation. Further Oracle logins were skipped; coordinate with the DBA before retrying.",
-    "ORACLE_TIMEOUT": "Login, redirect, query, or cleanup exceeded the total Oracle deadline. Compare SCAN and listener paths and review Oracle client/server logs.",
-    "ORA-01017": "Database authentication was rejected. Check credentials and account authorization; do not classify this as a DNS failure.",
-    "ORA-28000": "The database account is locked. Coordinate with the DBA before another login attempt.",
-    "ORA-28001": "The database password has expired. Coordinate a password change with the DBA; network changes will not resolve this error.",
-    "ORA-17868": "The Oracle client could not resolve the supplied host. Compare the exact JDBC/Oracle hostname with runtime DNS and the RCE mapping; client resolver behavior may differ.",
-    "ORA-12514": "The listener did not recognize the service name; check service registration and the supplied service.",
-    "ORA-12523": "The listener could not find an appropriate available database instance. Ask the DBA to check registered services and instance readiness; TCP reachability alone is insufficient.",
-    "DPY-6001": "Check database service name and listener service registration.",
-    "ORA-12506": "Listener service ACL filtering rejected the connection; check ADB network access/ACL and listener policy.",
-    "ORA-28759": "Check Oracle wallet location, file accessibility, and client mode.",
-    "DPY-3010": "Check whether this database version is supported by the selected python-oracledb client mode.",
-    "DPY-3001": "Check whether the database requires Oracle native network encryption; use an appropriate Thick client if needed.",
-    "DPI-1047": "The Oracle client libraries could not be loaded; check installed libraries and their runtime dependencies.",
+    "DNS_ERROR": "Verify the actual endpoint FQDN, the workspace's customer-visible private-network settings, and customer VCN/on-premises DNS with your network administrator.",
+    "DNS_TIMEOUT": "Ask your network administrator to check customer-owned DNS forwarding and resolver reachability; retain the runtime's timed-out attempt for Oracle Support if those checks pass.",
+    "DNS_NO_ADDRESSES": "Verify the endpoint FQDN and customer DNS records; an empty answer does not identify a service-side fault.",
+    "DNS_EXPECTATION_MISMATCH": "Remove unverified expected_ips and collect an observation-only report. Use a runtime-visible expected set only when its source is confirmed; customer-side database IPs can differ.",
+    "DNS_COUNT_MISMATCH": "Remove an unverified expected_dns_count. A workspace SCAN proxy can return one address; compare only with a confirmed runtime expectation.",
+    "TCP_TIMEOUT": "Verify the endpoint and port. Ask your network administrator to review customer-owned destination rules, routes and return routing, including DRG/VPN/FastConnect for on-premises.",
+    "TCP_REFUSED": "Confirm the configured listener port and protocol with the database/service owner; an active rejection alone does not identify the rejecting device.",
+    "TCP_NO_ROUTE": "Ask your network administrator to check customer-owned routes and the return path. Preserve the runtime result for Oracle Support if that path is verified.",
+    "TCP_ERROR": "Retain the errno and confirm endpoint/port and customer network checks; the socket error alone does not locate the fault.",
+    "IPV6_SOURCE_UNAVAILABLE": "Confirm the endpoint's required IPv4/IPv6 path with your network administrator. Retain the coverage warning; an IPv4 pass does not verify IPv6.",
+    "TLS_VERIFY_FAILED": "Verify the endpoint identity, trusted CA and runtime wallet configuration. Do not disable certificate verification or replace the hostname with an arbitrary IP.",
+    "TLS_FAILED": "Confirm TCPS versus TCP, TLS policy and wallet requirements. Use the compatible Oracle client probe for a database rather than treating raw TLS as a database login.",
+    "MTLS_WALLET_UNVERIFIED": "Raw TLS does not load an Oracle wallet. Use the Oracle probe with your configured wallet; a successful database probe can coexist with this warning.",
+    "SCAN_REDIRECT_UNVERIFIED": "Check the customer-visible workspace SCAN name/port and obtain the database service details from its owner. Run one Oracle probe to exercise a redirect; direct VIP checks are supplemental.",
+    "ORACLE_DRIVER_MISSING": "Install an approved python-oracledb version through your runtime's supported dependency mechanism, then rerun the optional database probe.",
+    "ORACLE_ENV_MISSING": "Provide the configured environment values through your runtime secret mechanism; keep values out of notebooks, target JSON and reports.",
+    "ORACLE_PROBE_NOT_CONFIGURED": "Add the optional Oracle client settings using environment-variable names, or continue with network-only checks.",
+    "ORACLE_PROBE_NOT_ENABLED": "To validate database login or SCAN redirection, configure and explicitly enable the optional Oracle probe; network-only success does not cover either.",
+    "ORACLE_RETRY_SUPPRESSED": "An earlier account/authentication error stopped further sampled logins. Contact the database owner before running another login attempt.",
+    "ORACLE_TIMEOUT": "Compare DNS/TCP/TLS results and the actual client settings. Ask the database owner to review login, redirect and query readiness; the total deadline does not identify which operation stalled.",
+    "ORA-01017": "For a customer-owned database, have its DBA verify the configured account and credential reference before retrying; network changes do not fix rejected credentials.",
+    "ORA-28000": "Contact the database owner about the locked account. Avoid further logins until corrected; customers should not attempt to unlock service-managed accounts.",
+    "ORA-28001": "For a customer-owned database, coordinate password renewal with its DBA and update the runtime's credential reference before one controlled login.",
+    "ORA-17868": "Verify the connection descriptor's actual hostname and application alias setup. Compare the affected runtime's DNS result; a Python host probe does not validate JDBC alias resolution.",
+    "ORA-12514": "Verify the selected database service from its connection information. For a customer-operated database, ask its DBA to review listener registration; use Oracle Support for managed database internals.",
+    "ORA-12523": "Ask the database owner to check service/instance readiness. Customer-operated listeners belong to the DBA; managed database listener state requires Oracle Support.",
+    "DPY-6001": "Verify the selected service name and ask the database owner to check registration; socket reachability alone is insufficient.",
+    "DPY-6005": "This is a generic Oracle connection error. Compare DNS/TCP/TLS stages and matching client settings before choosing a network, wallet or database remedy.",
+    "ORA-12506": "Ask the database owner to verify the permitted source and customer-visible access controls; do not infer a missing network rule from this code.",
+    "ORA-28759": "Verify your mounted wallet files, runtime access and the selected Oracle client mode; do not copy wallet contents into reports.",
+    "DPY-3010": "Confirm database-version compatibility with the selected approved Oracle client mode using the driver's documentation.",
+    "DPY-3001": "Ask the database owner whether native network encryption is required, and use a compatible client mode and supported runtime configuration.",
+    "DPI-1047": "Check the Oracle Client installation and dependencies in your runtime, or select Thin mode only when compatible with the workload.",
+    "ADDRESS_COVERAGE_INCOMPLETE": "The address cap omitted some returned addresses. Review max_addresses and rerun within the supported cap if needed; do not claim coverage of untested addresses.",
+    "CHILD_PROCESS_FAILED": "Check supported Python/runtime execution permissions and dependencies. The failed probe process is not proof of a DNS or database fault.",
+    "ORACLE_PROCESS_FAILED": "Check runtime Python/client prerequisites; the failed probe process does not identify a database or network cause.",
+    "ORACLE_CLIENT_ERROR": "Compare the actual client settings and failed stage with the original workload; retain sanitized error codes and request IDs for its owner."
+}
+
+RUNBOOK_SECTIONS = {
+    code: section
+    for section, codes in {
+        "dns": ("DNS_ERROR", "DNS_TIMEOUT", "DNS_NO_ADDRESSES", "ORA-17868"),
+        "dns-expectations": ("DNS_EXPECTATION_MISMATCH", "DNS_COUNT_MISMATCH"),
+        "tcp": ("TCP_TIMEOUT", "TCP_REFUSED", "TCP_NO_ROUTE", "TCP_ERROR"),
+        "tls": ("TLS_VERIFY_FAILED", "TLS_FAILED", "MTLS_WALLET_UNVERIFIED"),
+        "scan": ("SCAN_REDIRECT_UNVERIFIED",),
+        "accounts": ("ORA-01017", "ORA-28000", "ORA-28001", "ORACLE_RETRY_SUPPRESSED"),
+        "oracle-service": ("ORA-12514", "ORA-12523", "DPY-6001", "ORA-12506"),
+        "client": ("ORACLE_DRIVER_MISSING", "ORACLE_ENV_MISSING", "ORACLE_PROBE_NOT_CONFIGURED",
+                   "ORACLE_PROBE_NOT_ENABLED", "ORA-28759", "DPY-3010", "DPY-3001", "DPI-1047"),
+        "coverage": ("IPV6_SOURCE_UNAVAILABLE", "ADDRESS_COVERAGE_INCOMPLETE"),
+        "runtime": ("CHILD_PROCESS_FAILED", "ORACLE_PROCESS_FAILED", "EXECUTOR_CONFIG_UNAVAILABLE"),
+        "unclassified": ("DPY-6005", "ORACLE_TIMEOUT", "ORACLE_CLIENT_ERROR"),
+    }.items()
+    for code in codes
+}
+
+SUPPORT_HINTS = {
+    "dns": "If customer DNS/settings are verified, ask Oracle Support to inspect the affected Compute's effective attachment, service-managed DNS/CoreDNS and internal mapping propagation. Customers cannot inspect these controls.",
+    "dns-expectations": "Ask Oracle Support to confirm the runtime-visible mapping when it is unavailable to you; service-managed RCE/NAT mappings are not customer configuration.",
+    "tcp": "If customer destination/routing checks pass, ask Oracle Support to inspect service-managed NSGs, routing, private connectivity and RCE/proxy health for this runtime and UTC attempt.",
+    "tls": "Escalate if the compatible application/Oracle client still fails after customer trust, identity and wallet checks; ask Support to correlate the service path without disabling TLS verification.",
+    "scan": "If the configured SCAN and customer listener paths are valid but the real connection fails, ask Support to inspect service-managed SCAN proxy/redirect translation for the recorded attempt.",
+    "accounts": "For a service-managed database or account, Oracle Support must investigate credentials/account state; customers are not expected to access or unlock it.",
+    "oracle-service": "For managed database listener/readiness issues, contact the database service's Oracle Support team. For AIDP-only failures with the same valid service, request AIDP path correlation.",
+    "client": "If the documented runtime dependency/credential mechanism fails or is inaccessible, ask the workspace administrator or Oracle Support for the supported path; do not modify managed service images.",
+    "coverage": "If the required address family/path cannot be tested in the affected runtime, ask Support to confirm its supported networking and record the untested coverage.",
+    "runtime": "If supported runtime execution or executor access is unavailable, ask Support to inspect the runtime failure using the affected resource and UTC window.",
+    "unclassified": "For a service-managed dependency or unresolved AIDP-only failure, ask Oracle Support to correlate the underlying error and owner-side operation outcome before selecting a service-network remedy."
 }
 
 
@@ -233,6 +275,14 @@ def check(status, code, stage, endpoint, **details):
                   observed_at_utc=datetime.now(timezone.utc).isoformat(), **details)
     if code in HINTS:
         result["next_step"] = HINTS[code]
+    section = RUNBOOK_SECTIONS.get(code)
+    if section is None and status in {"FAIL", "WARN"}:
+        section = "unclassified"
+        result.setdefault("next_step", "Retain the failed stage/code and compare the actual application settings; the result alone does not identify a cause.")
+    if section:
+        result["runbook_ref"] = "RUNBOOK.md#" + section
+        if status in {"FAIL", "WARN"} or code == "ORACLE_RETRY_SUPPRESSED":
+            result["support_next_step"] = SUPPORT_HINTS[section]
     return result
 
 
@@ -292,7 +342,7 @@ def socket_probe(endpoint, address, timeout):
                     results.append(check("WARN", "MTLS_WALLET_UNVERIFIED", "tls", name, **details))
     except OSError as error:
         code, status = "TCP_ERROR", "FAIL"
-        if isinstance(error, TimeoutError) or error.errno == errno.ETIMEDOUT:
+        if isinstance(error, (TimeoutError, socket.timeout)) or error.errno == errno.ETIMEDOUT:
             code = "TCP_TIMEOUT"
         elif error.errno == errno.ECONNREFUSED:
             code = "TCP_REFUSED"
@@ -383,7 +433,8 @@ def run_diagnostics(config, label="runtime", oracle_probe=False, oracle_suppress
     status = "NOT_RUN" if not results else "FAIL" if counts.get("FAIL") else "WARN" if counts.get("WARN") else "PASS"
     return dict(version=VERSION, generated_at_utc=datetime.now(timezone.utc).isoformat(),
                 runtime=runtime_context(label), status=status, counts=counts,
-                limits=["Runtime-local evidence; does not inspect OCI routes, NSGs, PE/RCE configuration, or database server state.",
+                limits=["Runtime-local observations; does not inspect OCI routes, NSGs, PE/RCE configuration, or database server state.",
+                        "Customers inspect their own permitted resources; service-managed CoreDNS, NSGs and internal RCE/proxy state require Oracle Support.",
                         "Raw socket/TLS probes do not exercise Oracle Net or wallet authentication.",
                         "One Oracle login validates one chosen route and SELECT 1, not all RAC nodes, redirects, failover, or application queries.",
                         "Synthetic/reserved address classification alone does not prove an RCE mapping or private network path."],
@@ -427,7 +478,11 @@ def print_report(report):
         sample = "sample=" + str(row["sample_index"]) + " " if "sample_index" in row else ""
         print(sample + "{status:4} {endpoint} {stage} {code} {location}".format(location=location, **row))
         if row.get("next_step"):
-            print("     " + row["next_step"])
+            print("     Customer: " + row["next_step"])
+        if row.get("support_next_step"):
+            print("     Oracle Support: " + row["support_next_step"])
+        if row.get("runbook_ref"):
+            print("     Runbook: " + row["runbook_ref"])
     if not report["checks"]:
         print("No endpoints configured; no network probes ran.")
 
