@@ -55,13 +55,17 @@ DNS failures or expectation mismatches skip downstream probes for that target.
 The checks do not change network configuration. A failed attempt provides
 evidence and investigation hints, rather than a definitive network root cause.
 
-Use the [customer runbook](RUNBOOK.md) for diagnosis, correction by the right
-owner, and recovery checks. Keep that file alongside the notebook or open it
-from the sample repository. Output labels separate **Customer** actions from
-conditional **Oracle Support** investigations, with a runbook section reference.
-You can review your permitted workspace/customer-network resources; AIDP
-service-network CoreDNS, internal NSGs and RCE/proxy administration require
-Oracle Support. The probes do not inspect those controls.
+Establish the [customer VCN DNS baseline](RUNBOOK.md#customer-dns), then compare
+DNS and connectivity from this affected runtime. Customer-context resolution
+can return translated addresses here; differing IP sets alone are not a fault.
+Use the [decision table](RUNBOOK.md#comparison) to choose a customer correction
+and retest. Review [advanced DNS](RUNBOOK.md#advanced-dns) only for an applicable
+datasource; a workspace access list does not repair a missing customer DNS record.
+
+Keep the customer runbook alongside the notebook or open it from the sample
+repository. Displayed results show customer actions by default. Conditional
+Support guidance is retained in JSON; enable `SHOW_SUPPORT_GUIDANCE` only when
+needed for an unresolved issue. No service-internal access is required to begin.
 """),
         cell("markdown", """## 1. Configure endpoints
 
@@ -85,8 +89,8 @@ identify the mode. [Connection-method runbook](RUNBOOK.md#connection-method),
 [ADB connection details](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/connect-download-wallet.html)
 
 `expected_ips` is optional: leave it empty unless the complete runtime-visible
-set is confirmed. Ask Oracle Support when service-side mappings are unavailable
-to you; backend customer IPs may differ. Omit `expected_dns_count` when unknown.
+set is confirmed. Backend customer IPs may differ; continue the network and
+client checks without a mapping inventory. Omit `expected_dns_count` when unknown.
 
 For `kind: "scan"`, optionally list known listener VIPs/FQDNs and ports in
 `redirect_targets`. These are supplemental probes. AIDP SCAN proxy DNS can
@@ -130,6 +134,7 @@ CONFIG = {
 RUNTIME_LABEL = "Compute notebook Python runtime"
 RUN_CONNECTIVITY_CHECKS = False  # Enable after reviewing section 3 DNS results.
 RUN_ORACLE_PROBE = False
+SHOW_SUPPORT_GUIDANCE = False  # Optional fallback; JSON retains conditional hints.
 REPEAT_SAMPLES = 1  # Opt in to 2-10 samples for intermittent failures.
 SAMPLE_INTERVAL_SECONDS = 5  # Pause after each completed sample, 0-60 seconds.
 EXECUTOR_SAMPLE_PARTITIONS = 0  # Opt in, up to 16; requires classic PySpark RDDs.
@@ -153,11 +158,11 @@ Review every returned address and any confirmed runtime-visible expectations.
 This step makes no destination TCP/TLS connection and no database login; DNS-only
 PASS does not verify connectivity. Numeric IP targets skip hostname resolution.
 
-For `DNS_NAME_NOT_FOUND`, verify the actual descriptor HOST and customer DNS.
-For temporary failures/timeouts, retain repeated samples and compare the affected
-runtime with a known-working private target. System-resolver results do not reveal
-DNS response codes or TTLs. Customer DNS and service-managed CoreDNS checks have
-separate owners; follow the [DNS runbook](RUNBOOK.md#dns).
+For `DNS_NAME_NOT_FOUND`, verify the actual descriptor HOST and the customer VCN's
+records, private view and on-premises forwarding. For temporary failures/timeouts,
+retain repeated samples and compare customer DNS with this affected runtime.
+System-resolver results do not reveal DNS response codes, TTLs or the active
+workspace resolution context. Follow the [DNS runbook](RUNBOOK.md#dns).
 
 Use the actual catalog/default Compute for catalog failures, and executor samples
 for executor-side UDF dependencies. Success from another runtime is comparison
@@ -169,7 +174,7 @@ validate its alias configuration and JVM resolver with the workload owner.
 CONFIG = validate_config(CONFIG)  # Validate all destinations before probing.
 
 def show_summary(result, max_rows=40):
-    print_report(result, max_rows=max_rows)
+    print_report(result, max_rows=max_rows, show_support_guidance=SHOW_SUPPORT_GUIDANCE)
 
 dns_report = run_samples(CONFIG, label=RUNTIME_LABEL, dns_only=True,
                          sample_count=REPEAT_SAMPLES, interval_seconds=SAMPLE_INTERVAL_SECONDS)
@@ -277,17 +282,18 @@ else:
 """),
         cell("markdown", """## 6. Export evidence and interpret results
 
-Start with the failed stage's [runbook section](RUNBOOK.md). Verify your endpoint
-and client settings, then involve the customer network/database/workspace owner
-for resources they control. Customer NSGs/routes and AIDP service-network NSGs
-are different controls. After customer checks pass, Oracle Support can inspect
-service-managed DNS/CoreDNS, attachment, routing and RCE/SCAN proxy state.
-Unverified internal mappings are not required customer inputs.
+Start with the failed stage's [runbook section](RUNBOOK.md). Compare customer DNS
+and this runtime using the [decision table](RUNBOOK.md#comparison). Verify your
+endpoint/client settings, customer DNS, listener, source-specific network rules
+and routes with the customer network/database/workspace administrators. Correct
+the identified customer-owned setting and repeat the relevant checks.
 
 Retain before/after reports and rerun the original operation in the affected
 runtime. A socket or one database connection does not prove catalog, job or AI
-Compute recovery. The [Support handoff template](RUNBOOK.md#support) lists
-customer-visible identifiers and evidence; service-internal access is not needed.
+Compute recovery. If the failure remains unresolved, use the [fallback Support
+handoff](RUNBOOK.md#support). To display conditional guidance without new probes,
+set `SHOW_SUPPORT_GUIDANCE = True` and call `show_summary(report)` for the saved
+report. Service-internal access and mapping expectations are not required inputs.
 
 SCAN redirects remain unverified until an Oracle client connection succeeds.
 One successful connection cannot validate every node or failover path. Raw
@@ -313,7 +319,7 @@ else:
     notebook = dict(cells=cells, metadata={
         "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
         "language_info": {"name": "python", "version": "3.9"},
-        "aidp_diagnostics": {"source": "shared-utils/private-network-diagnostics/ai_compute_network_diagnostics.py", "version": "1.3"},
+        "aidp_diagnostics": {"source": "shared-utils/private-network-diagnostics/ai_compute_network_diagnostics.py", "version": "1.4"},
     }, nbformat=4, nbformat_minor=5)
     try:
         import nbformat

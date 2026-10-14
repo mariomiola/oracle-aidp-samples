@@ -2,31 +2,17 @@
 
 Use this runbook with the [Compute notebook](AIDP_Compute_Private_Network_Diagnostics.ipynb) or [AI Compute script](ai_compute_network_diagnostics.py). The tools observe a connection attempt from the runtime where they execute. They do not audit or repair network configuration. A failing stage narrows the investigation; it does not prove a specific missing rule or mapping.
 
-Each applicable JSON check includes `next_step` for a customer action, `support_next_step` for a conditional Oracle Support investigation, and `runbook_ref` for the section below. CLI and notebook summaries label these separately. An Oracle Support line does not mean a service fault was proven.
+Start with **customer DNS → affected-runtime DNS → per-address connectivity → matching database client → original workload**. Correct the first failed stage, then repeat the checks. Customers can complete this assessment with their workspace, network and database administrators.
 
-<a id="ownership"></a>
-
-## Who can investigate and change what?
-
-| Area | Customer action, subject to permissions | Oracle Support boundary |
-| --- | --- | --- |
-| Connection settings and runtime files | Verify your host, port, protocol, service selection, driver, wallet deployment and credential references | Investigate supported dependency/credential mechanisms that fail in managed runtimes |
-| Workspace private connectivity | Your workspace administrator can review documented subnet/NSG selections, DNS configuration and SCAN settings | Inspect effective runtime attachment and service-side application of those settings |
-| Customer VCN and destination | Your network administrator can inspect customer-owned NSGs, security lists, routes, private DNS, peering and on-premises connectivity | Inspect NSGs, routing and connectivity components inside the AIDP service network |
-| Database | Your DBA can manage customer-owned accounts; customer-operated database administrators can inspect their listeners and RAC instances | Investigate service-managed database accounts, listeners and platform dependencies |
-| AIDP service network | Collect observed DNS/socket results and resource identifiers available in the customer interface | Inspect service-managed CoreDNS, DNS/RCE mappings, SCAN proxy translation and service-side NSGs |
-
-A customer is **not expected to access AIDP service-network CoreDNS, internal NSGs or RCE administration**. An inaccessible customer-owned resource is a permissions/administrator handoff; an inaccessible service-owned resource is an Oracle Support handoff. The workspace's selected customer NSGs and the service network's internal NSGs are different controls.
-
-Workbench exposes customer-facing private-network settings, and the documented workspace API describes `subnetId`, `nsgIds`, `dnsZones` (permitted FQDNs), and `scanDetails` (FQDN/port pairs). Use the supported interface and your granted permissions. [Workbench workspace configuration](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aidug/workspaces.html), [workspace API schema](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aiwap/op-aidataplatforms-aidataplatformid-workspaces-workspacekey-put.html)
+Displayed results show customer actions and a runbook reference by default. JSON also retains conditional `support_next_step` guidance. Use it if customer checks leave the failure unresolved; `--show-support-guidance` or notebook `SHOW_SUPPORT_GUIDANCE = True` displays it. A Support suggestion does not establish a service fault.
 
 <a id="start"></a>
 
 ## Start with the failed operation
 
-1. Record the region, UTC failure window, workspace, affected Compute/AI Compute, and original notebook/catalog/job/agent operation. Include request, command or job IDs if already available. Missing service-internal identifiers do not prevent escalation.
+1. Record the region, UTC failure window, workspace, affected Compute/AI Compute, and original notebook/catalog/job/agent operation. Include request, command or job IDs if already available.
 2. Obtain the actual destination hostname, listener port and protocol from the connection information. A TNS alias such as `dbname_high` is not an endpoint HOST. Keep credentials and credential-bearing descriptors out of evidence.
-3. Run from the affected runtime. A notebook kernel, Spark executor, default/catalog Compute, AI Compute and a customer-subnet VM can use different paths. If the actual failing runtime is not accessible, record that limit and ask Support to correlate it; do not substitute another runtime and declare success.
+3. Establish the [customer DNS baseline](#customer-dns), then run from the affected runtime. A notebook kernel, Spark executor, default/catalog Compute, AI Compute and a customer-subnet VM can use different paths. Record which path each report covers. If a failing runtime is unavailable, continue the customer checks and mark that runtime untested.
 4. Confirm the [existing connection method](#connection-method). Keep its required security settings; a connectivity test does not require changing database policy.
 5. Start with **DNS resolution only**. From the script directory in the affected runtime:
 
@@ -38,7 +24,7 @@ Workbench exposes customer-facing private-network settings, and the documented w
 
    In the notebook, configure section 1 and run section 3 with `RUN_CONNECTIVITY_CHECKS = False`. Use real targets; `.invalid` placeholders are rejected. Leave `expected_ips` empty and omit `expected_dns_count` unless the runtime expectations have been confirmed. DNS-only PASS covers resolution and configured expectations; TCP/TLS, login and redirects remain untested.
 
-6. Review DNS results and correct the failed name/confirmed expectation with the appropriate owner. Then run connectivity with a fresh report:
+6. Compare DNS outcomes with the customer baseline using the [decision table](#comparison). Correct a wrong hostname, customer DNS configuration or unverified test expectation first. Then run connectivity with a fresh report:
 
    ```bash
    python3 ai_compute_network_diagnostics.py --config targets.json \
@@ -48,7 +34,44 @@ Workbench exposes customer-facing private-network settings, and the documented w
 
    In the notebook, enable `RUN_CONNECTIVITY_CHECKS`, rerun the configuration cell and section 4. Each sample resolves all configured names again before testing every returned address up to the cap. Failed DNS/expectations skip TCP/TLS and login for that target; healthy comparison targets continue. No successful tested TCP address skips an enabled Oracle login. If transport passes, investigate the optional client and original application settings. A warning or skipped check records missing coverage, not a proven outage.
 
-Customer-subnet testing is a useful comparison where access is permitted. Cloud Shell or a VM must actually be attached to the relevant customer network for that comparison; a general internet test is not equivalent. Even a same-subnet success cannot validate the service-side path. [AIDP private connectivity architecture](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
+<a id="customer-dns"></a>
+
+## Establish the customer DNS baseline
+
+For ordinary private database names, use the DNS view of the customer VCN selected by the private workspace as the baseline. Customer-context resolution can return a translated address in AIDP rather than the database's customer-side address. Compare resolution and connection outcomes; do not require those IP sets to be identical. [AIDP private connectivity architecture](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
+
+1. Confirm the selected VCN/subnet in the workspace's private-network settings. Obtain the exact application HOST from the database owner, including its full domain name.
+2. From a permitted VM or privately connected Cloud Shell in that customer network, run the same script and targets with `--dns-only --label "Customer VCN baseline" --output customer-dns-before.json`. Leave runtime IP/count expectations unset. If the script cannot run there, record an equivalent hostname lookup and the resolver used. A general internet or laptop lookup cannot validate a private DNS view.
+3. If resolution fails, have the customer network administrator verify the record and its private zone/view association with the VCN resolver. For on-premises DNS, check the forwarding rule, forwarding endpoint, reachable DNS server and its reply path. Confirm that a forwarding rule selects the intended domain. Correct the identified customer configuration and repeat the lookup. [OCI private DNS](https://docs.oracle.com/en-us/iaas/Content/DNS/Tasks/privatedns.htm), [DNS troubleshooting](https://docs.oracle.com/en-us/iaas/Content/DNS/Tasks/troubleshooting.htm)
+4. After DNS succeeds, run connectivity from this baseline using the actual listener port. Follow the [TCP runbook](#tcp) for a failure. A baseline connection uses its own source address; destination logs for the AIDP attempt are needed to validate the source permitted for AIDP.
+5. Run DNS, then connectivity in the affected AIDP runtime. Keep the reports separate and use the decision table below. A working customer baseline narrows the investigation but does not certify the AIDP path.
+
+The diagnostics observe each machine's system resolver; they do not query a chosen VCN resolver remotely or audit its configuration. A customer DNS baseline alone cannot prove which resolution context or feature is active in a particular AIDP workspace.
+
+<a id="comparison"></a>
+
+## Use the first failed stage to choose a correction
+
+| Observations | Customer action and retest |
+| --- | --- |
+| Customer VCN DNS fails | Correct the HOST, customer DNS record/view or on-premises forwarding identified above. Repeat customer DNS, then AIDP DNS. |
+| Customer DNS passes; AIDP DNS fails | Verify the workspace selects the intended private network and the application uses the same HOST. Review [advanced DNS](#advanced-dns) only for an applicable datasource. Repeat the affected-runtime lookup; retain an unresolved difference for the fallback handoff. |
+| Both resolve, but return different addresses | Keep `expected_ips`/answer count unset unless independently confirmed for each runtime. Translated addresses can be expected. Test each runtime's returned addresses with the original host retained for certificate verification. |
+| Customer baseline TCP fails | Verify listener readiness, customer-owned security rules/routes and return routing. Correct the identified restriction and repeat both paths. |
+| Customer TCP passes; AIDP TCP fails | Confirm the listener/port and destination-visible source for the AIDP attempt. Review customer controls for that source; a rule permitting only the baseline VM does not establish AIDP access. Repeat the affected path after the correction. |
+| AIDP DNS/TCP pass; client or workload fails | Check the existing wallet/trust, account, service, JDBC alias and SCAN configuration according to the reported client error. Retest with the matching client, then the original operation. |
+
+If customer configuration is verified and the affected path remains unsuccessful or unavailable, use the [fallback handoff](#support). Do not make a guessed network change to obtain a passing probe.
+
+<a id="advanced-dns"></a>
+
+## When to review advanced DNS settings
+
+Ordinary private/on-premises names start with customer DNS records, views and forwarding. Avoid adding every failed name to a workspace access list as a general DNS remedy.
+
+Review the workspace's **My data sources require advanced DNS configuration** settings for the documented special cases: network-source requirements involving the customer's in-region Service Gateway, cross-region sources, S3, or an `oraclecloud.com` service behind a private endpoint. The workspace administrator should use the exact datasource FQDNs through the supported interface and follow [workspace change precautions](#workspace). [Documented advanced DNS cases](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aidug/workspaces.html)
+
+These settings do not repair a missing customer DNS record or prove that a private/split-horizon name selects the intended destination. After an applicable change completes, repeat customer DNS, AIDP DNS, listener connectivity and the actual datasource operation. Record an unavailable setting or an unresolved difference; no internal feature flag or service DNS access is required to begin the customer assessment.
 
 <a id="connection-method"></a>
 
@@ -83,8 +106,8 @@ Name-not-found and temporary-failure codes describe the system resolver's result
 
 1. Verify the exact HOST against current connection information. Correct a wrong/stale host in your application and diagnostic target.
 2. If JDBC uses an alias, verify the application's `tnsnames.ora`, `TNS_ADMIN` and wallet setup separately. The explicit Python probe does not reproduce JDBC alias lookup. [Oracle JDBC alias configuration](https://docs.oracle.com/en/database/oracle/oracle-database/21/jajdb/oracle/jdbc/OracleDriver.html)
-3. Have the workspace administrator verify the permitted data-source FQDNs and relevant private/advanced-DNS settings. Use [workspace change precautions](#workspace) if correction is needed.
-4. Have the network administrator verify customer-owned private DNS records/views and forwarding to on-premises DNS. If that resolver cannot resolve the destination, correct that customer DNS configuration first. [OCI private DNS](https://docs.oracle.com/en-us/iaas/Content/DNS/Tasks/privatedns.htm), [DNS troubleshooting](https://docs.oracle.com/en-us/iaas/Content/DNS/Tasks/troubleshooting.htm)
+3. Establish the [customer DNS baseline](#customer-dns). Have the network administrator verify customer-owned records/views and forwarding to on-premises DNS; correct a confirmed customer DNS failure first.
+4. Verify the workspace's selected private network and SCAN settings. Review [advanced DNS](#advanced-dns) only for an applicable datasource. Use [workspace change precautions](#workspace) if a specific correction is needed.
 5. Compare the exact same target from the failing runtime and a known-working private comparison runtime. Catalog/default Compute and sampled Spark executors must be checked on their own paths. If Python resolves an explicit host while JDBC still fails, have the workload owner check its actual descriptor/alias, JVM resolver/search configuration and cached lookup behavior; a new Python process cannot validate the JVM's cache. Retest the original JDBC/UDF operation after the proven correction.
 
 **Escalate:** If the customer DNS and visible workspace settings are correct but the affected runtime still fails, provide the before report and comparisons. Ask Oracle Support to inspect effective attachment and service-managed DNS/CoreDNS/mapping propagation. For a service-internal dependency, use Support; do not add its internal DNS name to a customer allowlist.
@@ -101,7 +124,7 @@ The tool skips destination connectivity after a failed supplied expectation. Rev
 
 1. Confirm where the expected set/count came from and whether it applies to this runtime. Customer-side database IPs can differ from service-side translated/proxy addresses.
 2. If the expectation is unverified, remove it and rerun observation-only checks. This corrects the diagnostic configuration; it does not prove the network was repaired.
-3. Ask Oracle Support for mapping confirmation if the runtime expectation is not customer-visible. Do not create/edit RCE mappings or change CoreDNS yourself.
+3. Continue DNS and connectivity without a mapping expectation when it is unavailable. Compare the customer and affected-runtime results using the [decision table](#comparison); mapping confirmation is only needed if that uncertainty prevents diagnosis.
 
 **Verify recovery:** A confirmed expectation matches and the original workload succeeds, or document that mapping comparison remains unverified while the connection works. A SCAN proxy may expose one address; do not require three answers solely because the database uses RAC. [AIDP SCAN proxy behavior](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
 
@@ -115,7 +138,7 @@ Inspect each tested address. A single failed path remains in the report even if 
 
 1. Confirm the correct listener port and TCP/TCPS selection with the database/service owner. For refusal, ask that owner whether the destination listener is available; the rejecting device is not identified by the result alone.
 2. Ask the customer network administrator to review destination ingress, applicable customer-owned egress/security-list rules, peering/routes and return routing. For on-premises destinations, include the DRG, VPN/FastConnect, firewalls and the return path.
-3. Before correcting a customer rule, establish the **source as seen by the destination**, intended protocol and port. The notebook hostname, service-side synthetic DNS address and destination-visible source are not interchangeable. Ask Support for source confirmation if it is not customer-visible.
+3. Before correcting a customer rule, establish the **source as seen by the destination**, intended protocol and port. Correlate the AIDP attempt's UTC time with customer-owned flow/firewall/listener logs where available. The notebook hostname, translated DNS destination address and a baseline VM's source are not the AIDP source. If it remains unknown, record that gap and avoid guessing an ingress rule.
 4. Make only the proven customer-owned correction using normal change control. Do not treat a timeout as proof that a specific NSG is wrong.
 
 For ADB private endpoints, the database's customer VCN security configuration governs access; the selected connection information determines the TLS/mTLS listener. Oracle documents mTLS on 1522 and TLS on 1521 or 1522. [ADB private-endpoint access](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/private-endpoints-autonomous.html)
@@ -235,9 +258,25 @@ After database-owner confirmation, add `--oracle-probe --samples 1` for one cont
 
 Close only when the original operation succeeds on the required path and outstanding skipped/warning coverage is understood. For intermittent failures, observe an appropriate workload window: three samples can miss a problem. Earlier FAIL results remain in a repeated report even if later samples pass; retain them as history rather than treating that report as proof the correction failed.
 
+<a id="ownership"></a>
+
+## Reference: who can investigate and change what?
+
+| Area | Customer action, subject to permissions | Oracle Support boundary |
+| --- | --- | --- |
+| Connection settings and runtime files | Verify your host, port, protocol, service selection, driver, wallet deployment and credential references | Investigate supported dependency/credential mechanisms that fail in managed runtimes |
+| Workspace private connectivity | Your workspace administrator can review documented subnet/NSG selections, DNS configuration and SCAN settings | Inspect effective runtime attachment and service-side application of those settings |
+| Customer VCN and destination | Your network administrator can inspect customer-owned NSGs, security lists, routes, private DNS, peering and on-premises connectivity | Inspect NSGs, routing and connectivity components inside the AIDP service network |
+| Database | Your DBA can manage customer-owned accounts; customer-operated database administrators can inspect their listeners and RAC instances | Investigate service-managed database accounts, listeners and platform dependencies |
+| AIDP service network | Collect observed DNS/socket results and resource identifiers available in the customer interface | Inspect service-managed CoreDNS, DNS/RCE mappings, SCAN proxy translation and service-side NSGs |
+
+A customer is **not expected to access AIDP service-network CoreDNS, internal NSGs or RCE administration**. An inaccessible customer-owned resource is a permissions/administrator handoff; an inaccessible service-owned resource is an Oracle Support handoff. The workspace's selected customer NSGs and the service network's internal NSGs are different controls.
+
+Workbench exposes customer-facing subnet, NSG, SCAN and advanced DNS settings. The API's `dnsZones` field accepts FQDNs for workspace access; it does not create records in your customer DNS. Review advanced DNS only where the documented datasource conditions apply, using the supported interface and your granted permissions. [Workbench workspace configuration](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aidug/workspaces.html), [workspace API schema](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aiwap/op-aidataplatforms-aidataplatformid-workspaces-workspacekey-put.html)
+
 <a id="support"></a>
 
-## Prepare a private Oracle Support handoff
+## Fallback: prepare a private Oracle Support handoff
 
 Use the normal Oracle Support channel for your service. Include only details available to the customer; you do not need service tenancy IDs, Kubernetes namespaces or CoreDNS access.
 

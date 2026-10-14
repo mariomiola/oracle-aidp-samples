@@ -4,11 +4,13 @@ Use the [Compute notebook](AIDP_Compute_Private_Network_Diagnostics.ipynb) in th
 
 Start with ADB. Add cloud Oracle E-Business Suite database listeners, on-premises Oracle DBs, and RAC SCAN endpoints as needed. EBS here means Oracle E-Business Suite: these checks cover its database listener, not application HTTP or business functionality.
 
-Use the [customer runbook](RUNBOOK.md) to turn a result into diagnosis, a correction by the appropriate owner, and recovery verification. Each actionable check includes a customer `next_step`, a conditional `support_next_step`, and a `runbook_ref`; summaries label customer and Oracle Support guidance separately.
+Use the [customer runbook](RUNBOOK.md) to turn a result into a customer diagnosis, correction and recovery check. Displayed results show customer `next_step` guidance and a `runbook_ref` by default. Conditional `support_next_step` guidance remains in JSON for an unresolved issue; add `--show-support-guidance` or set notebook `SHOW_SUPPORT_GUIDANCE = True` when needed.
 
 Follow **DNS resolution → per-address TCP → TLS where required → optional database login → original workload**. See the [failure coverage and acceptance tests](TEST_COVERAGE.md) for what each step proves and what needs a separate functional check.
 
-Customers can review their connection settings, documented workspace controls, and customer-owned network/database resources when authorized. AIDP service-network CoreDNS, internal NSGs, RCE/NAT mappings and SCAN proxy internals require Oracle Support. The tool observes the runtime's connection path; it does not audit those controls. The runbook includes an [ownership table](RUNBOOK.md#ownership) and a [private Support handoff template](RUNBOOK.md#support).
+First confirm the exact application host and the workspace's selected private network. Establish a [customer VCN DNS baseline](RUNBOOK.md#customer-dns), then run DNS and connectivity from the affected AIDP runtime. Compare stage outcomes with the [decision table](RUNBOOK.md#comparison), make the identified customer-owned correction, and rerun the original workload.
+
+Customer-context DNS can produce translated addresses in AIDP. Different IPs from the customer baseline do not by themselves indicate a failure. Leave expected IP/count checks unset unless confirmed for that runtime. Review [advanced DNS settings](RUNBOOK.md#advanced-dns) only for an applicable datasource; an access list is not a general remedy for missing private DNS records. [AIDP private connectivity guidance](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
 
 ## Configure targets
 
@@ -98,25 +100,25 @@ Thin mode requires no Instant Client. For ADB mTLS, the mounted Thin-mode wallet
 
 SCAN is a RAC access name, used with TCP or TCPS. The SCAN listener selects a database node and returns a local listener address. A socket connection to the SCAN port alone cannot validate that redirect. The optional Oracle client check exercises one actual connection path; it does not guarantee all instances or failover work. [Oracle RAC SCAN behavior](https://docs.oracle.com/en/database/oracle/oracle-database/18/rilin/about-connecting-to-an-oracle-rac-database-using-scans.html)
 
-In AIDP, the workspace SCAN proxy can expose a single address and translate IP-based listener redirects. Leave DNS expectations unset unless the runtime-visible set/count is confirmed; ask Oracle Support when service-side mapping information is unavailable. Known listener targets are supplemental: their direct reachability may differ from the translated redirect path. For TCPS, the database owner should review advertised listener FQDNs and certificate identity. Use the [SCAN runbook](RUNBOOK.md#scan) for customer checks and Support escalation. [Oracle AIDP private connectivity guidance](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
+In AIDP, the workspace SCAN proxy can expose a single address and translate IP-based listener redirects. Leave DNS expectations unset unless the runtime-visible set/count is confirmed; network and client checks can proceed without an internal mapping inventory. Known listener targets are supplemental: their direct reachability may differ from the translated redirect path. For TCPS, the database owner should review advertised listener FQDNs and certificate identity. Use the [SCAN runbook](RUNBOOK.md#scan) for customer checks. [Oracle AIDP private connectivity guidance](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
 
 ## Interpret results
 
-| Result / runbook | Customer action | Conditional Oracle Support investigation |
-|---|---|---|
-| [DNS failure / ORA-17868](RUNBOOK.md#dns) | Verify actual host/alias, visible workspace settings and customer DNS with the appropriate administrator | Effective attachment, service-managed DNS/CoreDNS and mapping propagation after customer checks pass |
-| [DNS expectation mismatch](RUNBOOK.md#dns-expectations) | Remove unverified expectations; use only a confirmed runtime-visible set/count | Confirm inaccessible service-side mappings; customers do not edit RCE mappings |
-| [TCP timeout / refusal / route error](RUNBOOK.md#tcp) | Confirm listener and customer-owned rules/routes/return path with their owners | AIDP service-network NSGs, routing, connectivity and proxy health |
-| [TLS or mTLS warning](RUNBOOK.md#tls) | Verify trust/identity/wallet and use a compatible Oracle client | Correlate the service path if the actual client still fails; a raw mTLS warning alone is insufficient |
-| [SCAN redirect unverified](RUNBOOK.md#scan) | Verify visible SCAN settings and database service/listeners; run one Oracle connection | Internal SCAN proxy and redirect translation when customer configuration is verified |
-| [Account / credential errors](RUNBOOK.md#accounts) | Contact the owner; customer DBAs correct customer-owned accounts | Service-managed database credentials/account state |
-| [Oracle service / instance / ACL errors](RUNBOOK.md#oracle-service) | Verify connection information and customer-controlled readiness/access with the database owner | Managed database listener/readiness; AIDP path correlation for AIDP-only failures |
-| [Client prerequisites](RUNBOOK.md#client) | Use supported dependency/secret mechanisms and a compatible client mode | Documented runtime mechanism unavailable or failing |
-| [Generic DPY-6005 / total timeout](RUNBOOK.md#unclassified) | Compare network stages and actual client settings; avoid a guessed correction | Underlying service-managed dependency error and operation outcome |
-| [Address / IPv6 coverage](RUNBOOK.md#coverage) | Review the cap and required address families; retain untested paths | Confirm managed-runtime networking where required coverage is unavailable |
-| [Subprocess / executor gap](RUNBOOK.md#runtime) | Check provided dependencies/files and supported runtime access | Inspect the affected runtime when supported execution remains unavailable |
+| Result / runbook | Customer action |
+|---|---|
+| [DNS failure / ORA-17868](RUNBOOK.md#dns) | Verify the actual HOST/alias, customer VCN DNS records/view/forwarding, then the selected workspace network. Retest customer and affected-runtime DNS. |
+| [DNS expectation mismatch](RUNBOOK.md#dns-expectations) | Remove unverified expectations and continue observation and connectivity; compare only a confirmed runtime-visible set/count. |
+| [TCP timeout / refusal / route error](RUNBOOK.md#tcp) | Confirm listener readiness and customer-owned rules/routes/return path for the AIDP source as seen at the destination. |
+| [TLS or mTLS warning](RUNBOOK.md#tls) | Verify the existing trust/identity/wallet setup and use a compatible Oracle client. A raw mTLS warning alone does not justify a network change. |
+| [SCAN redirect unverified](RUNBOOK.md#scan) | Verify workspace SCAN settings and database service/listeners; run an actual Oracle connection. |
+| [Account / credential errors](RUNBOOK.md#accounts) | Stop repeated logins; the customer DBA corrects a customer-owned account or credential reference before another attempt. |
+| [Oracle service / instance / ACL errors](RUNBOOK.md#oracle-service) | Verify connection information and customer-controlled readiness/access with the database owner. |
+| [Client prerequisites](RUNBOOK.md#client) | Use supported dependency/secret mechanisms and a compatible client mode. |
+| [Generic DPY-6005 / total timeout](RUNBOOK.md#unclassified) | Compare network stages and actual client settings; preserve the sanitized client code and avoid a guessed correction. |
+| [Address / IPv6 coverage](RUNBOOK.md#coverage) | Review the cap and required address families; retain untested paths. |
+| [Subprocess / executor gap](RUNBOOK.md#runtime) | Check provided dependencies/files and supported runtime access; mark unavailable paths untested. |
 
-Use the [recovery checklist](RUNBOOK.md#recovery) after a correction and the [Support handoff](RUNBOOK.md#support) for unresolved or service-owned checks.
+Use the [recovery checklist](RUNBOOK.md#recovery) after a correction. If customer checks leave the issue unresolved, use the [fallback Support handoff](RUNBOOK.md#support) and [ownership reference](RUNBOOK.md#ownership). Customers do not need access to AIDP service-network CoreDNS, internal NSGs or RCE/SCAN administration to perform this assessment. The tools observe connection attempts and do not audit those internal controls.
 
 A timeout is evidence of a failed attempt, not proof of a particular missing security rule. Synthetic/reserved IPs are labeled as possible RCE addresses; the classification alone cannot confirm mappings. The script does not query or change VCNs, routes, NSGs, DNS, private endpoints, or databases. It uses direct sockets rather than HTTP proxies. Custom DSN proxies, failover descriptors, JDBC settings, and application-specific queries need validation with the actual workload.
 

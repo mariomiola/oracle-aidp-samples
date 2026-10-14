@@ -1,6 +1,6 @@
 # Failure coverage and acceptance tests
 
-Run from the affected runtime in this order: **DNS → TCP for each returned address → required TLS → optional Oracle connection → original operation**. The [runbook](RUNBOOK.md#start) gives the commands and ownership boundaries. Unit tests use dummy data, mocked services and loopback listeners; they do not certify a deployed private network.
+Establish the [customer VCN DNS baseline](RUNBOOK.md#customer-dns), then run from the affected runtime in this order: **DNS → TCP for each returned address → required TLS → optional Oracle connection → original operation**. Use the [comparison decision table](RUNBOOK.md#comparison) to choose a customer correction and retest. Unit tests use dummy data, mocked services and loopback listeners; they do not certify a deployed private network or the active DNS context/feature configuration.
 
 | Failure or path | Customer diagnostic and local regression coverage | Recovery acceptance and remaining boundary |
 | --- | --- | --- |
@@ -18,6 +18,10 @@ Run from the affected runtime in this order: **DNS → TCP for each returned add
 | Service-internal DNS or runtime provisioning failure | Record unavailable customer runtime/endpoint as an investigation boundary. No customer configuration change is prescribed. | Support investigates internal service discovery, CoreDNS/NSGs or provisioning state. A probe from another available runtime cannot validate the inaccessible path. |
 
 `test_dns_only_cli_reports_scope_and_rejects_combined_login` verifies DNS-only output cannot imply connectivity or enable login. `test_ip_literal_does_not_claim_hostname_resolution` verifies numeric targets explicitly skip DNS. The generated notebook uses the identical script, starts in DNS-only mode and retains the initial DNS report when connectivity is not requested.
+
+`test_cli_support_guidance_is_optional_and_json_preserves_it` verifies the CLI displays customer actions by default while retaining conditional guidance in exported evidence. The notebook summary test verifies that guidance can be displayed from a saved report without new network or login probes.
+
+For live customer acceptance, deliberately use separate baseline and AIDP reports. A translated AIDP answer can differ from the customer answer while both connections work. A customer DNS failure must lead to record/view/forwarding diagnosis; a customer-only TCP success must lead to a review of the destination-visible AIDP source before a rule correction. Advanced DNS applies only to documented datasource cases. None of these outcomes is established by a local regression test.
 
 Run the suite from the repository root:
 
