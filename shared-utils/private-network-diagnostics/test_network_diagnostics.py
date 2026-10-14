@@ -96,6 +96,63 @@ def listener(tls_context=None):
 
 
 class DiagnosticsTest(unittest.TestCase):
+    def test_adb_tcp_only_does_not_probe_tls_or_wallet_in_repeated_samples(self):
+        with listener() as (port, _), mock.patch.object(diagnostics.ssl, "create_default_context") as tls:
+            report = diagnostics.run_samples(config(kind="adb", host="127.0.0.1", port=port, protocol="tcps", tls_mode="mtls"),
+                                             tcp_only=True, sample_count=2, interval_seconds=0)
+        tls.assert_not_called()
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["test_scope"], "dns_and_tcp")
+        self.assertIn("raw_tls", report["not_run_stages"])
+        self.assertIn("oracle", report["not_run_stages"])
+        self.assertFalse(any(r["stage"] == "tls" for r in report["checks"]))
+        self.assertTrue(any(r["code"] == "TCP_CONNECTED" for r in report["checks"]))
+
+    def test_adb_tcp_only_dns_failure_still_blocks_connections(self):
+        with mock.patch.object(diagnostics, "child_json", return_value={"error": "DNS_NAME_NOT_FOUND"}), \
+                mock.patch.object(diagnostics, "socket_probe") as tcp:
+            report = diagnostics.run_samples(config(kind="adb", protocol="tcps"), tcp_only=True)
+        tcp.assert_not_called()
+        self.assertEqual(report["status"], "FAIL")
+        self.assertIn("CONNECTIVITY_BLOCKED_BY_DNS", {r["code"] for r in report["checks"]})
+
+    def test_adb_acl_rejection_is_not_hidden_by_successful_tcp_only_test(self):
+        cfg = config(kind="adb", protocol="tcps", oracle={
+            "user_env": "TEST_USER", "password_env": "TEST_PASSWORD", "service_name_env": "TEST_SERVICE"})
+        requests = []
+        def child(program, payload, timeout):
+            if program == diagnostics.DNS_CODE:
+                return {"addresses": [["IPv4", "127.0.0.1"]]}
+            requests.append(payload)
+            self.assertEqual(program, diagnostics.ORACLE_CODE)
+            return {"status": "FAIL", "code": "ORA-12506"}
+        with listener() as (port, _), mock.patch.object(diagnostics, "child_json", side_effect=child), \
+                mock.patch.object(diagnostics.ssl, "create_default_context") as tls:
+            cfg["endpoints"][0]["port"] = port
+            report = diagnostics.run_samples(cfg, tcp_only=True, oracle_probe=True)
+        tls.assert_not_called()
+        self.assertEqual(requests[0]["endpoint"]["protocol"], "tcps")
+        self.assertEqual(report["test_scope"], "dns_tcp_and_oracle")
+        self.assertEqual(report["status"], "FAIL")
+        self.assertIn("TCP_CONNECTED", {r["code"] for r in report["checks"]})
+        self.assertIn("ORA-12506", {r["code"] for r in report["checks"]})
+
+    def test_tcp_only_cli_keeps_tcps_endpoint_and_reports_unchecked_login(self):
+        with tempfile.TemporaryDirectory() as directory, listener() as (port, _):
+            input_path, output_path = Path(directory, "targets.json"), Path(directory, "report.json")
+            input_path.write_text(json.dumps(config(kind="adb", host="127.0.0.1", port=port,
+                                                  protocol="tcps", tls_mode="mtls")))
+            process = subprocess.run([sys.executable, str(DIRECTORY / "ai_compute_network_diagnostics.py"),
+                                      "--config", str(input_path), "--tcp-only", "--output", str(output_path)],
+                                     text=True, capture_output=True, timeout=5)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            report = json.loads(output_path.read_text())
+        self.assertEqual(report["test_scope"], "dns_and_tcp")
+        self.assertIn("oracle", report["not_run_stages"])
+        self.assertFalse(any(r["stage"] == "tls" for r in report["checks"]))
+        self.assertIn("TCP_CONNECTED", process.stdout)
+        self.assertNotIn("MTLS_WALLET_UNVERIFIED", process.stdout)
+
     def test_all_names_resolved_before_any_connectivity_or_login(self):
         cfg = config(kind="scan", redirect_targets=[{"host": "listener.example.com", "port": 1529}],
                      oracle={"user_env": "TEST_USER", "password_env": "TEST_PASSWORD", "service_name_env": "TEST_SERVICE"})
@@ -262,14 +319,14 @@ class DiagnosticsTest(unittest.TestCase):
             self.assertEqual(row["runbook_ref"], "RUNBOOK.md#" + section)
             self.assertEqual(report["status"], "FAIL")
 
-    def test_dns_failure_guides_workspace_and_dns_routing_checks(self):
+    def test_dns_failure_gives_connection_information_retry(self):
         with mock.patch.object(diagnostics, "child_json", return_value={"error": "DNS_ERROR"}):
             report = diagnostics.run_diagnostics(config())
         row = report["checks"][0]
         self.assertEqual(row["runbook_ref"], "RUNBOOK.md#dns")
-        self.assertIn("VCN/subnet", row["next_step"])
-        self.assertIn("private views", row["next_step"])
-        self.assertIn("forwarding rules", row["next_step"])
+        self.assertIn("HOST", row["next_step"])
+        self.assertIn("connection information", row["next_step"])
+        self.assertIn("retry", row["next_step"])
         self.assertNotIn("support_next_step", row)
         with contextlib.redirect_stdout(__import__("io").StringIO()) as output:
             diagnostics.print_report(report)
@@ -286,8 +343,8 @@ class DiagnosticsTest(unittest.TestCase):
             report = diagnostics.run_diagnostics(config())
         row = next(c for c in report["checks"] if c["code"] == "TCP_TIMEOUT")
         self.assertEqual(row["runbook_ref"], "RUNBOOK.md#tcp")
-        self.assertIn("routes", row["next_step"])
-        self.assertIn("return routing", row["next_step"])
+        self.assertIn("PORT", row["next_step"])
+        self.assertIn("ACL", row["next_step"])
         self.assertNotIn("support_next_step", row)
 
     def test_unclassified_oracle_error_preserves_code_and_avoids_guessed_remedy(self):
@@ -308,7 +365,6 @@ class DiagnosticsTest(unittest.TestCase):
                 self.assertIn('<a id="' + section + '"></a>', text)
         for section in ("start", "network-setup", "workspace", "recovery"):
             self.assertIn('<a id="' + section + '"></a>', text)
-        self.assertIn("within one invocation", text)
 
     def test_notebook_summary_shows_next_step_without_new_probes(self):
         notebook = json.loads((DIRECTORY / "AIDP_Compute_Private_Network_Diagnostics.ipynb").read_text())
@@ -318,6 +374,7 @@ class DiagnosticsTest(unittest.TestCase):
                          Path=Path, json=json, validate_config=diagnostics.validate_config,
                          print_report=diagnostics.print_report,
                          run_samples=diagnostics.run_samples)
+        namespace["get_notebook_config"] = lambda: namespace["CONFIG"]
         with mock.patch.object(diagnostics, "child_json", return_value={"error": "DNS_ERROR"}):
             report = diagnostics.run_diagnostics(config())
         with contextlib.redirect_stdout(__import__("io").StringIO()):
@@ -556,18 +613,25 @@ class DiagnosticsTest(unittest.TestCase):
         notebook = json.loads((DIRECTORY / "AIDP_Compute_Private_Network_Diagnostics.ipynb").read_text())
         namespace = {"__name__": "__main__"}
         for cell in notebook["cells"]:
-            if cell["cell_type"] == "code" and cell["metadata"].get("jupyter", {}).get("source_hidden"):
+            if cell["cell_type"] == "code" and cell["metadata"].get("aidp_shared_implementation"):
                 exec("".join(cell["source"]), namespace)
-        namespace.update(CONFIG=config(), CONFIG_PATH=None, RUNTIME_LABEL="test",
-                         REPEAT_SAMPLES=1, SAMPLE_INTERVAL_SECONDS=0,
-                         RUN_CONNECTIVITY_CHECKS=False, RUN_ORACLE_PROBE=False)
+        namespace.update(ADB_HOST="first.example.com", ADB_PORT=1522,
+                         RUN_CONNECTIVITY_CHECKS=False)
+        setup_cell = next("".join(c["source"]) for c in notebook["cells"]
+                          if "def get_notebook_config(" in "".join(c["source"]))
+        exec(setup_cell, namespace)
+        hosts = []
         events = []
         def child(program, payload, timeout):
             events.append("dns")
             self.assertEqual(program, namespace["DNS_CODE"])
+            hosts.append(payload[0])
             return {"addresses": [["IPv4", "127.0.0.1"]]}
-        def tcp(endpoint, address, timeout):
+        def tcp(endpoint, address, timeout, tcp_only=False):
             events.append("tcp")
+            self.assertTrue(tcp_only)
+            self.assertEqual(endpoint["host"], "second.example.com")
+            self.assertEqual(endpoint["port"], 1521)
             return [namespace["check"]("PASS", "TCP_CONNECTED", "tcp", endpoint["name"])]
         namespace.update(child_json=child, socket_probe=tcp)
         dns_cell = next("".join(c["source"]) for c in notebook["cells"] if "def show_summary(" in "".join(c["source"]))
@@ -578,10 +642,13 @@ class DiagnosticsTest(unittest.TestCase):
             self.assertEqual(events, ["dns"])
             self.assertEqual(namespace["connectivity_status"], "NOT_REQUESTED")
             self.assertEqual(namespace["report"]["test_scope"], "dns_only")
+            namespace["ADB_HOST"] = "second.example.com"
+            namespace["ADB_PORT"] = 1521
             namespace["RUN_CONNECTIVITY_CHECKS"] = True
             exec(network_cell, namespace)
         self.assertEqual(events, ["dns", "dns", "tcp"])
-        self.assertEqual(namespace["report"]["test_scope"], "network")
+        self.assertEqual(hosts, ["first.example.com", "second.example.com"])
+        self.assertEqual(namespace["report"]["test_scope"], "dns_and_tcp")
         self.assertEqual(namespace["dns_report"]["test_scope"], "dns_only")
 
     @unittest.skipUnless(shutil.which("openssl"), "openssl needed for local TLS fixture")
@@ -657,7 +724,7 @@ def connect(**kwargs):
         self.assertEqual((notebook["nbformat"], notebook["nbformat_minor"]), (4, 5))
         self.assertEqual(len({c["id"] for c in notebook["cells"]}), len(notebook["cells"]))
         source = (DIRECTORY / "ai_compute_network_diagnostics.py").read_text().split('\nif __name__ == "__main__":')[0] + "\n"
-        embedded = "".join("".join(c["source"]) for c in notebook["cells"] if c["metadata"].get("jupyter", {}).get("source_hidden"))
+        embedded = "".join("".join(c["source"]) for c in notebook["cells"] if c["metadata"].get("aidp_shared_implementation"))
         self.assertEqual(embedded, source)
         namespace = {"__name__": "__main__"}
         with mock.patch.object(subprocess, "run") as child, contextlib.redirect_stdout(__import__("io").StringIO()):

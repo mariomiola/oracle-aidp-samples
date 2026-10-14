@@ -1,6 +1,16 @@
 # Failure coverage and acceptance tests
 
-Start with the Compute notebook or AI Compute script in the affected runtime, in this order: **DNS → TCP for each returned address → required TLS → optional Oracle connection → original operation**. Use the [network setup guide](RUNBOOK.md#network-setup) to relate results to DNS views/forwarding and datasource routing; another-machine comparison is optional. Unit tests use dummy data, mocked services and loopback listeners; they do not certify a deployed private network or the active DNS context/feature configuration.
+The primary ADB flow is **DNS → TCP listener reachability → query with the existing database client**. It asks only for HOST/PORT from ADB Database Connection. `tcp_only=True` skips raw TLS probes; it does not change the actual database client's security. Optional broader diagnostics still cover TLS, SCAN and other datasources.
+
+| ADB scenario | Live acceptance |
+| --- | --- |
+| Private endpoint in the workspace subnet | DNS and listener checks pass from that workspace, then its existing client returns `1` for `SELECT 1 FROM DUAL`. |
+| Private endpoint in another subnet or VCN | The same tests pass across the intended private network path, followed by the original operation. |
+| Public endpoint protected by an ACL | The actual database query succeeds from the workspace. TCP success alone cannot establish ACL acceptance. |
+
+`test_adb_tcp_only_does_not_probe_tls_or_wallet_in_repeated_samples` verifies basic reachability avoids wallet warnings and preserves explicit untested stages. `test_adb_tcp_only_dns_failure_still_blocks_connections` verifies the DNS prerequisite. `test_adb_acl_rejection_is_not_hidden_by_successful_tcp_only_test` verifies a client-side access rejection remains a failure after the listener passes. The CLI test covers the same option and export scope.
+
+Local fixtures do not certify any deployed subnet, route or ACL. The following broader checks remain available when needed.
 
 | Failure or path | Customer diagnostic and local regression coverage | Recovery acceptance and remaining boundary |
 | --- | --- | --- |

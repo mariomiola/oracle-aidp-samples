@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "1.5"
+VERSION = "1.6"
 DNS_CODE = r'''
 import json, socket, sys
 host, port = json.load(sys.stdin)
@@ -99,19 +99,19 @@ except Exception as error:
 
 # Keep next steps focused on the user's network setup and connection settings.
 HINTS = {
-    "DNS_NAME_NOT_FOUND": "Confirm the connection's actual HOST and the workspace VCN/subnet. Check which private DNS view or forwarding rule should resolve this name, then its record and DNS server. This resolver result does not prove a DNS-server NXDOMAIN response.",
-    "DNS_TEMPORARY_FAILURE": "Repeat DNS samples in this runtime and retain their UTC times. Review the workspace VCN's DNS source and forwarding-server availability for the affected domain before choosing a correction.",
+    "DNS_NAME_NOT_FOUND": "Copy HOST again from the current database connection information and retry the DNS test in your private workspace. Follow the runbook for your ADB case if the same name still fails.",
+    "DNS_TEMPORARY_FAILURE": "Retry the DNS test in this workspace. If the same hostname continues to fail, follow the runbook for your connection case.",
     "DNS_IP_LITERAL": "An IP literal bypasses hostname resolution. Use the original application FQDN to investigate a DNS failure; this target checks only the supplied address.",
     "DNS_SHORT_NAME": "Confirm the full endpoint hostname from the connection descriptor. A short name can depend on resolver search rules; a TNS alias must be resolved by the application's Oracle client.",
     "CONNECTIVITY_BLOCKED_BY_DNS": "Correct or verify the earlier DNS failure or confirmed expectation mismatch, then rerun. No TCP/TLS connection was attempted for this target.",
     "ORACLE_BLOCKED_BY_DNS": "Resolve the earlier DNS failure or confirmed expectation mismatch before enabling a database login for this target.",
     "ORACLE_BLOCKED_BY_TCP": "No tested address accepted TCP. Resolve the listener/connectivity failure before retrying database login.",
-    "DNS_ERROR": "Confirm the endpoint FQDN and workspace VCN/subnet. Review that VCN resolver's private views and forwarding rules for this domain; for on-premises DNS, check the route and DNS traffic to the configured server.",
-    "DNS_TIMEOUT": "Check the DNS forwarding rule, its endpoint and the route to the DNS server, including DNS traffic and replies. Record the UTC attempt and rerun the DNS cell or script stage after correcting the identified configuration.",
+    "DNS_ERROR": "Check HOST against the current database connection information and retry the DNS test in your private workspace. The runbook gives the next check for your connection case.",
+    "DNS_TIMEOUT": "Retry the DNS test in this workspace. A timeout alone does not identify the cause; use the runbook for your connection case if it persists.",
     "DNS_NO_ADDRESSES": "Verify the endpoint FQDN and customer DNS records; an empty answer does not identify a service-side fault.",
     "DNS_EXPECTATION_MISMATCH": "Remove unverified expected_ips and collect an observation-only report. Use a runtime-visible expected set only when its source is confirmed; customer-side database IPs can differ.",
     "DNS_COUNT_MISMATCH": "Remove an unverified expected_dns_count. A workspace SCAN proxy can return one address; compare only with a confirmed runtime expectation.",
-    "TCP_TIMEOUT": "Verify the endpoint and port. Ask your network administrator to review customer-owned destination rules, routes and return routing, including DRG/VPN/FastConnect for on-premises.",
+    "TCP_TIMEOUT": "Check PORT against the selected database connection information and confirm the database is available. Follow the same-subnet, remote-subnet or ACL steps in the runbook; this timeout alone does not prove a firewall fault.",
     "TCP_REFUSED": "Confirm the configured listener port and protocol with the database/service owner; an active rejection alone does not identify the rejecting device.",
     "TCP_NO_ROUTE": "Check the route to the datasource from the selected workspace network and the return path, including peering or DRG/VPN/FastConnect where applicable. Retest the same listener in this runtime.",
     "TCP_ERROR": "Retain the errno and confirm endpoint/port and customer network checks; the socket error alone does not locate the fault.",
@@ -123,7 +123,7 @@ HINTS = {
     "ORACLE_DRIVER_MISSING": "Install an approved python-oracledb version through your runtime's supported dependency mechanism, then rerun the optional database probe.",
     "ORACLE_ENV_MISSING": "Provide the configured environment values through your runtime secret mechanism; keep values out of notebooks, target JSON and reports.",
     "ORACLE_PROBE_NOT_CONFIGURED": "Add the optional Oracle client settings using environment-variable names, or continue with network-only checks.",
-    "ORACLE_PROBE_NOT_ENABLED": "To validate database login or SCAN redirection, configure and explicitly enable the optional Oracle probe; network-only success does not cover either.",
+    "ORACLE_PROBE_NOT_ENABLED": "Run a small query using your application's existing database connection. These network checks do not validate database login; an actual connection is also needed for SCAN redirects.",
     "ORACLE_RETRY_SUPPRESSED": "An earlier account/authentication error stopped further sampled logins. Contact the database owner before running another login attempt.",
     "ORACLE_TIMEOUT": "Compare DNS/TCP/TLS results and the actual client settings. Ask the database owner to review login, redirect and query readiness; the total deadline does not identify which operation stalled.",
     "ORA-01017": "For a customer-owned database, have its DBA verify the configured account and credential reference before retrying; network changes do not fix rejected credentials.",
@@ -306,7 +306,7 @@ def address_type(ip):
     return "private_or_special" if not address.is_global else "global"
 
 
-def socket_probe(endpoint, address, timeout):
+def socket_probe(endpoint, address, timeout, tcp_only=False):
     family_name, ip = address
     family = socket.AF_INET6 if family_name == "IPv6" else socket.AF_INET
     sockaddr = (ip, endpoint["port"], 0, 0) if family == socket.AF_INET6 else (ip, endpoint["port"])
@@ -321,7 +321,7 @@ def socket_probe(endpoint, address, timeout):
             connection.connect(sockaddr)
             results.append(check("PASS", "TCP_CONNECTED", "tcp", name,
                                  elapsed_ms=round((time.monotonic() - start) * 1000, 1), **details))
-            if endpoint["protocol"] == "tcps":
+            if endpoint["protocol"] == "tcps" and not tcp_only:
                 tls_start = time.monotonic()
                 try:
                     context = ssl.create_default_context(cafile=endpoint.get("ca_file"))
@@ -394,7 +394,7 @@ def resolve_endpoint(endpoint, timeout):
     return results, [] if any(row["status"] == "FAIL" for row in results) else addresses
 
 
-def probe_addresses(endpoint, addresses, timeout, max_addresses):
+def probe_addresses(endpoint, addresses, timeout, max_addresses, tcp_only=False):
     name = endpoint["name"]
     if not addresses:
         return [check("SKIP", "CONNECTIVITY_BLOCKED_BY_DNS", "tcp", name)]
@@ -403,14 +403,15 @@ def probe_addresses(endpoint, addresses, timeout, max_addresses):
         results.append(check("WARN", "ADDRESS_COVERAGE_INCOMPLETE", "coverage", name,
                              tested=max_addresses, total=len(addresses)))
     for address in addresses[:max_addresses]:
-        results.extend(socket_probe(endpoint, address, timeout))
+        results.extend(socket_probe(endpoint, address, timeout, tcp_only=True) if tcp_only
+                       else socket_probe(endpoint, address, timeout))
     return results
 
 
-def probe_endpoint(endpoint, timeout, max_addresses):
+def probe_endpoint(endpoint, timeout, max_addresses, tcp_only=False):
     """Convenience check of one endpoint, preserving DNS-before-connectivity."""
     results, addresses = resolve_endpoint(endpoint, timeout)
-    return results + probe_addresses(endpoint, addresses, timeout, max_addresses)
+    return results + probe_addresses(endpoint, addresses, timeout, max_addresses, tcp_only=tcp_only)
 
 
 def runtime_context(label):
@@ -426,7 +427,7 @@ def runtime_context(label):
                 connection_path="Direct sockets; HTTP proxies and Oracle DSN proxy options are not used")
 
 
-def run_diagnostics(config, label="runtime", oracle_probe=False, oracle_suppressed=(), dns_only=False):
+def run_diagnostics(config, label="runtime", oracle_probe=False, oracle_suppressed=(), dns_only=False, tcp_only=False):
     if dns_only and oracle_probe:
         raise ConfigurationError("DNS-only checks cannot enable an Oracle login")
     config = validate_config(config)
@@ -449,7 +450,7 @@ def run_diagnostics(config, label="runtime", oracle_probe=False, oracle_suppress
     if not dns_only:
         for plan in plans:
             plan["network"] = probe_addresses(plan["endpoint"], plan["addresses"],
-                                              config["timeout_seconds"], config["max_addresses"])
+                                              config["timeout_seconds"], config["max_addresses"], tcp_only=tcp_only)
             results.extend(plan["network"])
     # Phase 3 is opt-in and never retries login after failed prerequisites.
     for endpoint in config["endpoints"] if not dns_only else []:
@@ -487,8 +488,10 @@ def run_diagnostics(config, label="runtime", oracle_probe=False, oracle_suppress
         status = "NOT_RUN"
     return dict(version=VERSION, generated_at_utc=datetime.now(timezone.utc).isoformat(),
                 runtime=runtime_context(label), status=status, counts=counts,
-                test_scope="dns_only" if dns_only else "network_and_oracle" if oracle_probe else "network",
-                not_run_stages=["tcp", "tls", "oracle", "scan_redirect"] if dns_only else [],
+                test_scope="dns_only" if dns_only else "dns_tcp_and_oracle" if tcp_only and oracle_probe
+                           else "dns_and_tcp" if tcp_only else "network_and_oracle" if oracle_probe else "network",
+                not_run_stages=["tcp", "tls", "oracle", "scan_redirect"] if dns_only
+                               else ["raw_tls"] + ([] if oracle_probe else ["oracle", "scan_redirect"]) if tcp_only else [],
                 limits=["Runtime-local observations; does not inspect OCI routes, NSGs, PE/RCE configuration, or database server state.",
                         "DNS results observe this runtime's resolver; they do not audit the VCN's DNS views, forwarding rules or network setup.",
                         "Raw socket/TLS probes do not exercise Oracle Net or wallet authentication.",
@@ -497,7 +500,7 @@ def run_diagnostics(config, label="runtime", oracle_probe=False, oracle_suppress
                 checks=results)
 
 
-def run_samples(config, label="runtime", oracle_probe=False, sample_count=1, interval_seconds=5, dns_only=False):
+def run_samples(config, label="runtime", oracle_probe=False, sample_count=1, interval_seconds=5, dns_only=False, tcp_only=False):
     """Collect bounded samples; retain failures even if a later sample passes."""
     _number(sample_count, 1, 10, "sample_count", integer=True)
     _number(interval_seconds, 0, 60, "interval_seconds")
@@ -505,13 +508,14 @@ def run_samples(config, label="runtime", oracle_probe=False, sample_count=1, int
     if dns_only and oracle_probe:
         raise ConfigurationError("DNS-only checks cannot enable an Oracle login")
     if sample_count == 1 or not config["endpoints"]:
-        return run_diagnostics(config, label, oracle_probe, dns_only=dns_only)
+        return run_diagnostics(config, label, oracle_probe, dns_only=dns_only, tcp_only=tcp_only)
     checks, statuses, starts, suppressed = [], [], [], set()
     for index in range(1, sample_count + 1):
         if index > 1:
             time.sleep(interval_seconds)
         starts.append(datetime.now(timezone.utc).isoformat())
-        report = run_diagnostics(config, label, oracle_probe, oracle_suppressed=suppressed, dns_only=dns_only)
+        report = run_diagnostics(config, label, oracle_probe, oracle_suppressed=suppressed,
+                                 dns_only=dns_only, tcp_only=tcp_only)
         statuses.append(report["status"])
         suppressed.update(row["endpoint"] for row in report["checks"]
                           if row["stage"] == "oracle" and row["code"] in {"ORA-01017", "ORA-28000", "ORA-28001"})
@@ -559,12 +563,13 @@ def main(argv=None):
     parser.add_argument("--label", default="AI Compute runtime", help="Network vantage point label")
     parser.add_argument("--oracle-probe", action="store_true", help="Enable one login and SELECT 1 per configured endpoint per sample")
     parser.add_argument("--dns-only", action="store_true", help="Resolve names and compare confirmed expectations without TCP/TLS or database login")
+    parser.add_argument("--tcp-only", action="store_true", help="Check DNS and listener reachability without a raw TLS probe; use the existing database client to validate its security")
     parser.add_argument("--samples", type=int, default=1, help="Collect 1-10 samples; default 1")
     parser.add_argument("--interval", type=float, default=5, help="Pause 0-60 seconds between completed samples")
     args = parser.parse_args(argv)
     try:
         report = run_samples(json.loads(Path(args.config).read_text()), args.label, args.oracle_probe,
-                             args.samples, args.interval, dns_only=args.dns_only)
+                             args.samples, args.interval, dns_only=args.dns_only, tcp_only=args.tcp_only)
         print_report(report)
         if args.output:
             Path(args.output).write_text(json.dumps(report, indent=2) + "\n")

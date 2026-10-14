@@ -1,79 +1,25 @@
 {
-  "timeout_seconds": 5,
-  "oracle_timeout_seconds": 20,
-  "max_addresses": 16,
   "endpoints": [
     {
-      "name": "ADB using a wallet",
+      "name": "ADB in the workspace subnet",
       "kind": "adb",
-      "host": "adb-private.example.invalid",
+      "host": "adb-same-subnet.example.invalid",
       "port": 1522,
-      "protocol": "tcps",
-      "tls_mode": "mtls",
-      "expected_ips": [],
-      "oracle": {
-        "mode": "thin",
-        "user_env": "ADB_USER",
-        "password_env": "ADB_PASSWORD",
-        "service_name_env": "ADB_SERVICE_NAME",
-        "wallet_location_env": "ADB_WALLET_DIRECTORY",
-        "wallet_password_env": "ADB_WALLET_PASSWORD"
-      }
+      "protocol": "tcps"
     },
     {
-      "name": "ADB without a wallet",
+      "name": "ADB in another subnet or VCN",
       "kind": "adb",
-      "host": "adb-tls.example.invalid",
-      "port": 1521,
-      "protocol": "tcps",
-      "tls_mode": "tls",
-      "expected_ips": [],
-      "oracle": {
-        "mode": "thin",
-        "user_env": "ADB_USER",
-        "password_env": "ADB_PASSWORD",
-        "service_name_env": "ADB_SERVICE_NAME"
-      }
+      "host": "adb-remote-subnet.example.invalid",
+      "port": 1522,
+      "protocol": "tcps"
     },
     {
-      "name": "Cloud EBS database",
-      "kind": "ebs",
-      "host": "ebs-db.example.invalid",
-      "port": 1521,
-      "protocol": "tcp"
-    },
-    {
-      "name": "On-premises Oracle database",
-      "kind": "onprem",
-      "host": "onprem-db.example.invalid",
-      "port": 1521,
-      "protocol": "tcp"
-    },
-    {
-      "name": "RAC SCAN",
-      "kind": "scan",
-      "host": "rac-scan.example.invalid",
-      "port": 1521,
-      "protocol": "tcp",
-      "expected_ips": [],
-      "redirect_targets": [
-        {"host": "rac-node1-vip.example.invalid", "port": 1521},
-        {"host": "rac-node2-vip.example.invalid", "port": 1521}
-      ],
-      "oracle": {
-        "mode": "thin",
-        "user_env": "RAC_USER",
-        "password_env": "RAC_PASSWORD",
-        "service_name_env": "RAC_SERVICE_NAME"
-      }
-    },
-    {
-      "name": "Application service dependency",
-      "kind": "dependency",
-      "host": "service.example.invalid",
-      "port": 443,
-      "protocol": "tcps",
-      "tls_mode": "tls"
+      "name": "ADB public endpoint with ACL",
+      "kind": "adb",
+      "host": "adb-public-acl.example.invalid",
+      "port": 1522,
+      "protocol": "tcps"
     }
   ]
 }
