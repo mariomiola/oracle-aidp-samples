@@ -14,7 +14,22 @@ Customers can review their connection settings, documented workspace controls, a
 
 Copy `targets.example.json` to `targets.json`. Keep only the targets you need and replace every `.invalid` example host. Examples are rejected before any probes run. Use the actual host, port, and TCP/TCPS protocol from the database connection information; do not paste a URL, JDBC URL, password, or entire TNS descriptor into `host`.
 
-For ADB, choose the private endpoint connection details from the Database Connection page. mTLS uses port 1522; TLS connections can use 1521 or 1522 according to the selected connection information. Choose `tls_mode: "mtls"` when a client wallet is required. For walletless TLS, select `tls_mode: "tls"` and remove wallet environment references from `oracle`. [Oracle ADB connection information](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/connect-download-wallet.html)
+### Use the connection method you already have
+
+Start with the application's connection information, rather than choosing an encryption policy for the test. DNS and listener-port checks work without a database wallet. A successful socket connection proves the listener is reachable; the actual client connection verifies the required security setup, account and service.
+
+| Existing connection | Sample settings | Additional check after DNS and TCP |
+| --- | --- | --- |
+| **ADB using a client wallet for mTLS** | `protocol: "tcps"`, `tls_mode: "mtls"`; host/port from the selected mTLS descriptor | Use the compatible Oracle client with the mounted wallet. The raw network probe does not use that wallet. |
+| **ADB without a wallet, using TLS** | `protocol: "tcps"`, `tls_mode: "tls"`; host/port from the selected TLS descriptor | Verify the server certificate and connect using the compatible Oracle client. This method must already be permitted by the database. |
+| **On-premises Oracle using TCP** | `protocol: "tcp"`; host/port from its existing descriptor | No raw TLS check. Use the Oracle client with the database's existing security settings; native network encryption can operate over TCP. |
+| **On-premises Oracle using TCPS** | `protocol: "tcps"`; `tls_mode` and trust/client-certificate settings confirmed by the DBA | Verify the configured TLS connection with the matching client. Use a wallet only where that client/security configuration requires it. |
+
+ADB uses an encrypted connection with either method. Its mTLS descriptor uses port 1522; its TLS descriptor can use 1521 or 1522. Copy the actual port from **Database Connection**, because selecting another method can change the port that must be reachable. The two ADB templates in `targets.example.json` cover these cases; keep the one matching your application. [ADB connection information](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/connect-download-wallet.html), [ADB wallet-based connection](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/connect-jdbc-thin-wallet.html)
+
+Wallet presence alone does not identify the connection method: wallets can hold trusted server certificates as well as client certificates. Follow the selected descriptor and client configuration. For on-premises Oracle native network encryption, the Python probe needs a compatible Thick-mode setup. Other on-premises sources use `kind: "dependency"` for network checks and their own supported client for secure login; the Oracle probe does not implement their login protocols. Services that negotiate TLS within their application protocol need that client to validate TLS. [Oracle TLS configuration](https://docs.oracle.com/en/database/oracle/oracle-database/26/dbseg/configuring-transport-layer-security-encryption.html), [Oracle client encryption support](https://python-oracledb.readthedocs.io/en/latest/user_guide/connection_handling.html#securely-encrypting-network-traffic-to-oracle-database)
+
+For a wallet-based ADB connection, `MTLS_WALLET_UNVERIFIED` means **the network probe did not test your wallet**. It is a coverage warning, not proof of a failed database connection or private-network fault. Assess the compatible client and original workload results separately. Follow the [connection-method runbook](RUNBOOK.md#connection-method) when unsure which settings apply.
 
 Start with DNS only:
 

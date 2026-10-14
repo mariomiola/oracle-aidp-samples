@@ -118,7 +118,7 @@ HINTS = {
     "IPV6_SOURCE_UNAVAILABLE": "Confirm the endpoint's required IPv4/IPv6 path with your network administrator. Retain the coverage warning; an IPv4 pass does not verify IPv6.",
     "TLS_VERIFY_FAILED": "Verify the endpoint identity, trusted CA and runtime wallet configuration. Do not disable certificate verification or replace the hostname with an arbitrary IP.",
     "TLS_FAILED": "Confirm TCPS versus TCP, TLS policy and wallet requirements. Use the compatible Oracle client probe for a database rather than treating raw TLS as a database login.",
-    "MTLS_WALLET_UNVERIFIED": "Raw TLS does not load an Oracle wallet. Use the Oracle probe with your configured wallet; a successful database probe can coexist with this warning.",
+    "MTLS_WALLET_UNVERIFIED": "The network probe did not use your database wallet, so wallet-based login is not verified by this check. Use your compatible Oracle client with the configured wallet; this coverage warning can remain even when that login succeeds.",
     "SCAN_REDIRECT_UNVERIFIED": "Check the customer-visible workspace SCAN name/port and obtain the database service details from its owner. Run one Oracle probe to exercise a redirect; direct VIP checks are supplemental.",
     "ORACLE_DRIVER_MISSING": "Install an approved python-oracledb version through your runtime's supported dependency mechanism, then rerun the optional database probe.",
     "ORACLE_ENV_MISSING": "Provide the configured environment values through your runtime secret mechanism; keep values out of notebooks, target JSON and reports.",

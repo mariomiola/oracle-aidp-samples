@@ -27,7 +27,8 @@ Workbench exposes customer-facing private-network settings, and the documented w
 1. Record the region, UTC failure window, workspace, affected Compute/AI Compute, and original notebook/catalog/job/agent operation. Include request, command or job IDs if already available. Missing service-internal identifiers do not prevent escalation.
 2. Obtain the actual destination hostname, listener port and protocol from the connection information. A TNS alias such as `dbname_high` is not an endpoint HOST. Keep credentials and credential-bearing descriptors out of evidence.
 3. Run from the affected runtime. A notebook kernel, Spark executor, default/catalog Compute, AI Compute and a customer-subnet VM can use different paths. If the actual failing runtime is not accessible, record that limit and ask Support to correlate it; do not substitute another runtime and declare success.
-4. Start with **DNS resolution only**. From the script directory in the affected runtime:
+4. Confirm the [existing connection method](#connection-method). Keep its required security settings; a connectivity test does not require changing database policy.
+5. Start with **DNS resolution only**. From the script directory in the affected runtime:
 
    ```bash
    python3 ai_compute_network_diagnostics.py --config targets.json --dns-only \
@@ -37,7 +38,7 @@ Workbench exposes customer-facing private-network settings, and the documented w
 
    In the notebook, configure section 1 and run section 3 with `RUN_CONNECTIVITY_CHECKS = False`. Use real targets; `.invalid` placeholders are rejected. Leave `expected_ips` empty and omit `expected_dns_count` unless the runtime expectations have been confirmed. DNS-only PASS covers resolution and configured expectations; TCP/TLS, login and redirects remain untested.
 
-5. Review DNS results and correct the failed name/confirmed expectation with the appropriate owner. Then run connectivity with a fresh report:
+6. Review DNS results and correct the failed name/confirmed expectation with the appropriate owner. Then run connectivity with a fresh report:
 
    ```bash
    python3 ai_compute_network_diagnostics.py --config targets.json \
@@ -48,6 +49,21 @@ Workbench exposes customer-facing private-network settings, and the documented w
    In the notebook, enable `RUN_CONNECTIVITY_CHECKS`, rerun the configuration cell and section 4. Each sample resolves all configured names again before testing every returned address up to the cap. Failed DNS/expectations skip TCP/TLS and login for that target; healthy comparison targets continue. No successful tested TCP address skips an enabled Oracle login. If transport passes, investigate the optional client and original application settings. A warning or skipped check records missing coverage, not a proven outage.
 
 Customer-subnet testing is a useful comparison where access is permitted. Cloud Shell or a VM must actually be attached to the relevant customer network for that comparison; a general internet test is not equivalent. Even a same-subnet success cannot validate the service-side path. [AIDP private connectivity architecture](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
+
+<a id="connection-method"></a>
+
+## Does this connection need a wallet or a TLS check?
+
+Use the application's existing connection information. The customer does not need to troubleshoot TLS terminology before running DNS and listener-port checks.
+
+- **ADB with a client wallet for mTLS:** use its mTLS host/port and mount the wallet through the supported runtime mechanism for the optional Oracle connection.
+- **ADB without a wallet:** use its allowed TLS connection information and a compatible client. It is still an encrypted connection.
+- **On-premises Oracle:** ask the DBA for the existing TCP or TCPS descriptor and required client security setup. TCP can use Oracle native network encryption; the absence of a raw TLS check does not certify the connection is unencrypted.
+- **Another on-premises source:** use its real hostname and listener port for network checks, then its own client to validate the required security and login protocol.
+
+A wallet cannot fix a name that does not resolve or an unreachable listener port. Once DNS and TCP pass, a client can still fail because of trust, client certificates/wallet access, credentials or database service settings. TLS/mTLS selection can change the destination port; use the descriptor's port rather than assuming a default. A wallet may contain server trust certificates without being used for mTLS, so do not infer the mode from the file's presence alone. [ADB connection methods](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/connect-download-wallet.html), [Oracle TLS](https://docs.oracle.com/en/database/oracle/oracle-database/26/dbseg/configuring-transport-layer-security-encryption.html)
+
+`MTLS_WALLET_UNVERIFIED` records that the raw probe did not use the wallet. Check the optional Oracle result and original operation to decide whether the wallet-based connection works. A warning from a probe that did not use your wallet is insufficient evidence for a network repair.
 
 <a id="workspace"></a>
 

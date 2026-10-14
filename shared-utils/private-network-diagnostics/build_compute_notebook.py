@@ -65,10 +65,24 @@ Oracle Support. The probes do not inspect those controls.
 """),
         cell("markdown", """## 1. Configure endpoints
 
-Use the database's actual connection information. For ADB, use the private
-endpoint hostname, the chosen listener port, and `tcps`; select `tls_mode` as
-`tls` or `mtls`. Oracle documents mTLS on 1522 and TLS on 1521 or 1522 depending
-on the connection information. [ADB connection details](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/connect-download-wallet.html)
+Use the connection method your application already has. DNS and listener-port
+checks do not require a wallet. They establish reachability; the real client
+connection verifies the required security setup and database login.
+
+| Existing connection | Network configuration | Connection check after DNS and TCP |
+| --- | --- | --- |
+| ADB with a client wallet for mTLS | `protocol: "tcps"`, `tls_mode: "mtls"` | Compatible Oracle client with the mounted wallet |
+| ADB without a wallet, using allowed TLS | `protocol: "tcps"`, `tls_mode: "tls"` | Server certificate verification and compatible Oracle client |
+| On-premises Oracle using TCP | `protocol: "tcp"` | Existing Oracle client/security settings; no raw TLS check |
+| On-premises Oracle using TCPS | `protocol: "tcps"`, DBA-confirmed TLS/client-certificate settings | Matching Oracle client; wallet only where required |
+
+For ADB, copy HOST and PORT from the selected **Database Connection** descriptor.
+Both methods are encrypted; mTLS uses 1522, while TLS can use 1521 or 1522.
+For on-premises sources, follow the existing datasource configuration. Oracle
+native network encryption can use TCP and requires compatible client setup;
+other datasource logins require their own client. Wallet presence alone does not
+identify the mode. [Connection-method runbook](RUNBOOK.md#connection-method),
+[ADB connection details](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/connect-download-wallet.html)
 
 `expected_ips` is optional: leave it empty unless the complete runtime-visible
 set is confirmed. Ask Oracle Support when service-side mappings are unavailable
@@ -84,14 +98,16 @@ Example target to adapt (the `.invalid` placeholder is rejected until replaced):
 
 ```python
 {
-    "name": "ADB private endpoint", "kind": "adb",
+    "name": "ADB using a wallet", "kind": "adb",
     "host": "adb-private.example.invalid", "port": 1522,
     "protocol": "tcps", "tls_mode": "mtls", "expected_ips": []
 }
 ```
 
-This sample's `targets.example.json` has templates
-for ADB, cloud EBS, on-premises DBs, and SCAN. Keep only the endpoints you need.
+For walletless ADB TLS, select its allowed TLS host/port, set `tls_mode: "tls"`
+and omit wallet environment references from `oracle`. `targets.example.json`
+contains separate ADB wallet and walletless templates, plus cloud EBS, on-premises
+DBs and SCAN. Keep only the endpoints you need.
 Never place passwords or wallet contents in this notebook or target JSON.
 
 Use the actual endpoint HOST in `host`, rather than an Oracle TNS alias such as
@@ -178,8 +194,10 @@ containing `ewallet.pem`; choose Thick mode when the workload requires it and
 install/configure the Oracle client separately.
 [Oracle client configuration](https://python-oracledb.readthedocs.io/en/latest/user_guide/connection_handling.html)
 
-Raw TLS does not load an Oracle wallet. A raw mTLS warning can remain even if
-the optional database probe succeeds. Each stage reports its own evidence.
+The network probe does not use your database wallet. `MTLS_WALLET_UNVERIFIED`
+therefore means the wallet-based connection was not tested by that check. Inspect
+the optional Oracle result and original workload separately; this coverage warning
+can remain when the real wallet-based login succeeds.
 
 For intermittent failures, set `REPEAT_SAMPLES` to 2-10. Each check has a UTC
 timestamp and sample index. Earlier failures remain in the report when later

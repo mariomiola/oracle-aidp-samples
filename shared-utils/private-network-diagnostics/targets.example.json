@@ -4,7 +4,7 @@
   "max_addresses": 16,
   "endpoints": [
     {
-      "name": "ADB private endpoint",
+      "name": "ADB using a wallet",
       "kind": "adb",
       "host": "adb-private.example.invalid",
       "port": 1522,
@@ -18,6 +18,21 @@
         "service_name_env": "ADB_SERVICE_NAME",
         "wallet_location_env": "ADB_WALLET_DIRECTORY",
         "wallet_password_env": "ADB_WALLET_PASSWORD"
+      }
+    },
+    {
+      "name": "ADB without a wallet",
+      "kind": "adb",
+      "host": "adb-tls.example.invalid",
+      "port": 1521,
+      "protocol": "tcps",
+      "tls_mode": "tls",
+      "expected_ips": [],
+      "oracle": {
+        "mode": "thin",
+        "user_env": "ADB_USER",
+        "password_env": "ADB_PASSWORD",
+        "service_name_env": "ADB_SERVICE_NAME"
       }
     },
     {
