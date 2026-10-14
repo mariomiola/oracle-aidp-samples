@@ -9,6 +9,8 @@ Use these samples **inside the AIDP runtime where the connection fails**. Start 
 
 Follow **DNS resolution → listener connectivity → existing database client → original operation**. The [runbook](RUNBOOK.md) helps you identify the workspace network, understand where DNS should resolve the name, find the relevant route/rules and correct the first failed stage. Each actionable result includes a `next_step` and a link to the matching runbook section.
 
+Use the [application test table](RUNBOOK.md#application-tests) for ADB, EBS, on-premises databases and SCAN. If a connection is blocked, follow the [firewall check](RUNBOOK.md#firewall) to match your test to the observed source, destination, listener port and allow/deny rule. Forwarded DNS has a [separate firewall check](RUNBOOK.md#dns-firewall).
+
 DNS follows the customer VCN context for ordinary private names. Your private views or forwarding configuration determine the backend destination; AIDP may return a translated address. Different addresses from a customer-side lookup do not by themselves indicate a failure. Review [advanced DNS settings](RUNBOOK.md#advanced-dns) only for an applicable datasource. [AIDP private connectivity architecture](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
 
 ## Compute notebook
@@ -92,7 +94,7 @@ A SCAN socket connection does not validate redirection. Confirm workspace SCAN F
 | --- | --- |
 | [DNS](RUNBOOK.md#dns) | Confirm HOST and workspace VCN/subnet; inspect the private DNS view/record or forwarding path for that domain. |
 | [Expected DNS answer](RUNBOOK.md#dns-expectations) | Confirm the test expectation applies to this runtime; translated answers can differ from backend addresses. |
-| [Listener connectivity](RUNBOOK.md#tcp) | Check listener readiness, datasource route, applicable rules and return routing for the observed AIDP source. |
+| [Listener connectivity](RUNBOOK.md#tcp) | Check listener readiness and routing; use the [firewall steps](RUNBOOK.md#firewall) to identify the observed source, destination, port and matched rule. |
 | [TLS/client security](RUNBOOK.md#tls) | Use the existing client, trust/wallet and required security settings. |
 | [SCAN redirect](RUNBOOK.md#scan) | Check SCAN settings, selected service and local listeners; use an actual Oracle connection. |
 | [Account](RUNBOOK.md#accounts) or [database service](RUNBOOK.md#oracle-service) | Correct the identified credential/account/service issue before another connection. |

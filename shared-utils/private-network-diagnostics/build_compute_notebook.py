@@ -150,6 +150,10 @@ Review rule/view ordering if queries select the wrong source. The resolver resul
 alone does not expose server response codes, TTLs or the chosen forwarding rule.
 A comparison from another machine in the customer VCN is optional when helpful.
 
+For DNS forwarded through a firewall, check the forwarding endpoint's traffic
+to the DNS server on UDP/TCP 53 and its replies. This source can differ from the
+database connection source. [DNS firewall steps](RUNBOOK.md#dns-firewall)
+
 Numeric IP targets skip hostname resolution. If the explicit HOST resolves but
 JDBC still reports UnknownHostException, verify its TNS alias, selected descriptor
 and JVM lookup behavior with the original client. For executor-side failures,
@@ -175,6 +179,22 @@ Targets with failed DNS/expectations skip TCP/TLS and database login; other targ
 continue as comparisons. Every returned address is checked up to the configured cap.
 If no tested address accepts TCP, the Oracle login is skipped. TCP success permits
 the optional Oracle probe; raw mTLS warnings need the compatible wallet-backed client.
+
+### Check the firewall for this connection
+
+1. For a clear comparison, configure one datasource, `REPEAT_SAMPLES = 1` and
+   `RUN_ORACLE_PROBE = False`, then run the connectivity cell below.
+2. Note the test time in UTC (also recorded in saved results) and find the matching
+   firewall event for the datasource. Check its observed source, destination, TCP
+   listener port and allow/deny rule. Translated DNS addresses can differ from
+   the customer destination.
+3. Correct a confirmed restriction, rerun connectivity, then use your existing
+   database client and repeat the original operation. A timeout or missing event
+   alone does not prove firewall blocking.
+
+[Firewall validation steps](RUNBOOK.md#firewall),
+[application tests for ADB, EBS, on-premises databases and SCAN](RUNBOOK.md#application-tests).
+For SCAN, the actual client must also reach the redirected database listener.
 
 The optional Oracle probe needs an approved `python-oracledb` installation and
 the environment variables named in each endpoint's `oracle` settings. It uses

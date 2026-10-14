@@ -46,6 +46,22 @@ If the DNS server is on-premises, the DNS query itself needs a working network p
 
 The notebook tests its Python kernel's path. Optional executor sampling tests sampled Spark hosts; notebook success does not establish executor success. If the failing catalog/default Compute or another runtime cannot be tested, record that path as untested.
 
+<a id="application-tests"></a>
+
+## Choose the application test
+
+For each datasource, run **DNS first, then listener connectivity** in your affected Compute notebook or AI Compute. After the listener is reachable, use the connection settings your application already has:
+
+| Your datasource | Application test | What success confirms |
+| --- | --- | --- |
+| **ADB, with or without a wallet** | Connect using the selected Database Connection information and your existing wallet or walletless setup. Run `SELECT 1 FROM DUAL`. | The selected database service accepts this client connection and query. |
+| **Cloud EBS database** | Connect to the EBS database listener using the existing Oracle client settings. Run `SELECT 1 FROM DUAL`, then a small read your application normally performs. | Database access works; EBS application functions need their own test. |
+| **On-premises Oracle database** | Use the existing descriptor and client security settings. Run `SELECT 1 FROM DUAL`. | This database service is reachable through the configured private network path. |
+| **Oracle RAC using SCAN** | Connect through SCAN with the actual Oracle client and run `SELECT 1 FROM DUAL`. Check the initial listener and redirected listener connections if it fails. | One selected redirect works; other RAC nodes and failover need separate checks. |
+| **Other databases or APIs** | Use the application's existing driver or SDK for a small query/read. | That client can perform the tested operation; Oracle login checks do not test these protocols. |
+
+If the listener test fails, follow the [firewall check](#firewall). If the listener works but the application test fails, check the reported client error and your existing [wallet/security](#connection-method), [account](#accounts) or [database service](#oracle-service) settings. Finish by repeating the original notebook, job, catalog read or AI Compute operation.
+
 <a id="dns"></a>
 
 ## DNS does not resolve the datasource name
@@ -62,6 +78,8 @@ Check the exact HOST first. If it is correct, follow the DNS source identified i
 | Same name has public and private answers | Private zone/view selected for the workspace VCN and the intended record. | Correct an unintended DNS view or record. Different answers outside the private network can be expected. |
 
 Review DNS view selection and forwarding-rule order when a lookup goes to the wrong server. An earlier matching view or rule can prevent the intended forwarding path from being used. Verify DNS traffic and replies between the forwarding endpoint and the target server, including required UDP/TCP port 53 access. The script's system-resolver result does not reveal the DNS response code, TTL or which rule was selected. [OCI private DNS configuration](https://docs.oracle.com/en-us/iaas/Content/DNS/Tasks/privatedns.htm)
+
+If a firewall is on the forwarding path, use the [DNS firewall check](#dns-firewall) below.
 
 For `DNS_SHORT_NAME`, use the descriptor's full HOST and confirm any intended search suffix. If JDBC uses a TNS alias, verify `tnsnames.ora`, `TNS_ADMIN` and the selected descriptor with that client. Python's explicit HOST lookup does not validate JDBC alias lookup or the JVM's cached DNS answer. [Oracle JDBC alias configuration](https://docs.oracle.com/en/database/oracle/oracle-database/21/jajdb/oracle/jdbc/OracleDriver.html)
 
@@ -112,6 +130,35 @@ Confirm the expected IP set/count applies to the runtime being tested. If it is 
 4. Correct the identified listener, route or rule and rerun connectivity in the affected notebook or AI Compute. Retain a failed address even if another returned address succeeds; this can explain intermittent failures.
 
 A timeout does not identify a particular missing NSG rule. If no tested address accepts TCP, the optional database login is skipped. After listener reachability passes, test the existing database client and original operation.
+
+<a id="firewall"></a>
+
+## Check what the firewall needs to allow
+
+Use a test from your **affected notebook or AI Compute** and match it to a firewall event. The firewall's observed source address is the useful address for its rule; the notebook's local address can change along the network path.
+
+1. **Run DNS.** Confirm the exact datasource HOST resolves. Correct a lookup failure before testing the database listener.
+2. **Run one connectivity sample.** Test one datasource, with database login disabled. In Compute, use `REPEAT_SAMPLES = 1` and `RUN_ORACLE_PROBE = False`, then run section 4. In AI Compute, use the connectivity stage with `sample_count=1` and `oracle_probe=False`. One sample can test several returned addresses.
+3. **Find the matching firewall event.** Note the test time in UTC; it is also recorded as `observed_at_utc` in the saved results. Search around that time for the datasource connection, allowing for the test's duration. Check the fields below and the matched rule.
+4. **Correct the identified restriction.** A matching **deny** event identifies a rule to review. Allow the verified source to the required destination and listener port, and check the return route. If no event appears, check logging coverage, the time window and routing; a timeout alone does not prove firewall blocking.
+5. **Retest the connection.** Repeat connectivity, then the [application test](#application-tests) and original operation. Repeat from each Compute/AI Compute path you need; one observed source does not establish every path's source range.
+
+| Firewall field | Use this value |
+| --- | --- |
+| Source | The IP/address range verified for this AIDP connection at the firewall. |
+| Destination | The database address on the customer network, as shown in the firewall event. A translated AIDP DNS address can differ. |
+| Protocol and destination port | TCP and the listener PORT from the selected connection information. Client source ports can vary. |
+| Result | Allow/deny, matched rule and connection/session outcome, where logged. |
+
+For OCI security rules, stateful rules track response traffic. Stateless rules require corresponding response rules; either setup still needs a valid return route. [OCI security rules](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/securityrules.htm)
+
+For **SCAN**, the actual client connection must reach the initial SCAN listener and the redirected database listener. Check both events if a login fails, including their destination addresses and configured ports. [AIDP SCAN connection path](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
+
+<a id="dns-firewall"></a>
+
+### If DNS is forwarded through a firewall
+
+Run the DNS stage in your notebook or AI Compute. For a failed forwarded lookup, check the rule for that domain and the path from the **DNS forwarding endpoint to the configured DNS server**. Verify UDP/TCP destination port 53 and replies. The DNS forwarding source can differ from the database connection source. After correcting the identified restriction, rerun DNS, then database connectivity. [OCI DNS forwarding requirements](https://docs.oracle.com/en-us/iaas/Content/DNS/Tasks/privatedns.htm)
 
 <a id="connection-method"></a>
 <a id="tls"></a>
