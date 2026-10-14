@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "1.2"
+VERSION = "1.3"
 DNS_CODE = r'''
 import json, socket, sys
 host, port = json.load(sys.stdin)
@@ -37,7 +37,12 @@ try:
         ("IPv6" if a[0] == socket.AF_INET6 else "IPv4", a[4][0])
         for a in answers if a[0] in (socket.AF_INET, socket.AF_INET6)))}))
 except socket.gaierror as error:
-    print(json.dumps({"error": "DNS_ERROR", "errno": error.errno}))
+    code = "DNS_ERROR"
+    if error.errno == getattr(socket, "EAI_AGAIN", None):
+        code = "DNS_TEMPORARY_FAILURE"
+    elif error.errno in {getattr(socket, "EAI_NONAME", None), getattr(socket, "EAI_NODATA", None)}:
+        code = "DNS_NAME_NOT_FOUND"
+    print(json.dumps({"error": code, "errno": error.errno}))
 '''
 
 # A separate process bounds DNS, Oracle login, redirects, query, and cleanup.
@@ -94,6 +99,13 @@ except Exception as error:
 
 # next_step is a customer action; managed-service investigations are separate.
 HINTS = {
+    "DNS_NAME_NOT_FOUND": "The system resolver could not find an address for this name. Verify the actual descriptor HOST, customer DNS records and visible workspace settings; this does not prove a DNS-server NXDOMAIN response.",
+    "DNS_TEMPORARY_FAILURE": "The system resolver reported a temporary failure. Retain repeated UTC samples and compare customer DNS and affected runtimes before choosing a remedy.",
+    "DNS_IP_LITERAL": "An IP literal bypasses hostname resolution. Use the original application FQDN to investigate a DNS failure; this target checks only the supplied address.",
+    "DNS_SHORT_NAME": "Confirm the full endpoint hostname from the connection descriptor. A short name can depend on resolver search rules; a TNS alias must be resolved by the application's Oracle client.",
+    "CONNECTIVITY_BLOCKED_BY_DNS": "Correct or verify the earlier DNS failure or confirmed expectation mismatch, then rerun. No TCP/TLS connection was attempted for this target.",
+    "ORACLE_BLOCKED_BY_DNS": "Resolve the earlier DNS failure or confirmed expectation mismatch before enabling a database login for this target.",
+    "ORACLE_BLOCKED_BY_TCP": "No tested address accepted TCP. Resolve the listener/connectivity failure before retrying database login.",
     "DNS_ERROR": "Verify the actual endpoint FQDN, the workspace's customer-visible private-network settings, and customer VCN/on-premises DNS with your network administrator.",
     "DNS_TIMEOUT": "Ask your network administrator to check customer-owned DNS forwarding and resolver reachability; retain the runtime's timed-out attempt for Oracle Support if those checks pass.",
     "DNS_NO_ADDRESSES": "Verify the endpoint FQDN and customer DNS records; an empty answer does not identify a service-side fault.",
@@ -136,9 +148,11 @@ HINTS = {
 RUNBOOK_SECTIONS = {
     code: section
     for section, codes in {
-        "dns": ("DNS_ERROR", "DNS_TIMEOUT", "DNS_NO_ADDRESSES", "ORA-17868"),
+        "dns": ("DNS_ERROR", "DNS_TIMEOUT", "DNS_NO_ADDRESSES", "DNS_NAME_NOT_FOUND",
+                "DNS_TEMPORARY_FAILURE", "DNS_IP_LITERAL", "DNS_SHORT_NAME", "ORA-17868",
+                "CONNECTIVITY_BLOCKED_BY_DNS", "ORACLE_BLOCKED_BY_DNS"),
         "dns-expectations": ("DNS_EXPECTATION_MISMATCH", "DNS_COUNT_MISMATCH"),
-        "tcp": ("TCP_TIMEOUT", "TCP_REFUSED", "TCP_NO_ROUTE", "TCP_ERROR"),
+        "tcp": ("TCP_TIMEOUT", "TCP_REFUSED", "TCP_NO_ROUTE", "TCP_ERROR", "ORACLE_BLOCKED_BY_TCP"),
         "tls": ("TLS_VERIFY_FAILED", "TLS_FAILED", "MTLS_WALLET_UNVERIFIED"),
         "scan": ("SCAN_REDIRECT_UNVERIFIED",),
         "accounts": ("ORA-01017", "ORA-28000", "ORA-28001", "ORACLE_RETRY_SUPPRESSED"),
@@ -190,6 +204,8 @@ def _host(value):
         return str(ipaddress.ip_address(value))
     except ValueError:
         name = value.rstrip(".")
+        if "_" in name:
+            raise ConfigurationError("Use the actual HOST from the connection descriptor; a TNS alias belongs in the application's Oracle client configuration")
         if name.lower().endswith(".invalid") or name == "CHANGE_ME":
             raise ConfigurationError("Replace example hosts with actual endpoint names")
         if len(name) > 253 or not all(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", p) for p in name.split(".")):
@@ -354,18 +370,30 @@ def socket_probe(endpoint, address, timeout):
     return results
 
 
-def probe_endpoint(endpoint, timeout, max_addresses):
+def resolve_endpoint(endpoint, timeout):
+    """Resolve without opening destination sockets; retain resolver-layer evidence."""
     name, host, port = endpoint["name"], endpoint["host"], endpoint["port"]
     start = time.monotonic()
-    resolved = child_json(DNS_CODE, [host, port], timeout)
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        resolved = {"addresses": [["IPv6" if literal.version == 6 else "IPv4", str(literal)]]}
+    else:
+        resolved = child_json(DNS_CODE, [host, port], timeout)
     if "error" in resolved:
         code = {"TIMEOUT": "DNS_TIMEOUT"}.get(resolved["error"], resolved["error"])
-        return [check("FAIL", code, "dns", name, host=host, errno=resolved.get("errno"))]
+        return [check("FAIL", code, "dns", name, host=host, errno=resolved.get("errno"),
+                      elapsed_ms=round((time.monotonic() - start) * 1000, 1))], []
     addresses = resolved.get("addresses", [])
     if not addresses:
-        return [check("FAIL", "DNS_NO_ADDRESSES", "dns", name, host=host)]
-    results = [check("PASS", "DNS_RESOLVED", "dns", name, host=host,
+        return [check("FAIL", "DNS_NO_ADDRESSES", "dns", name, host=host)], []
+    results = [check("SKIP" if literal is not None else "PASS",
+                     "DNS_IP_LITERAL" if literal is not None else "DNS_RESOLVED", "dns", name, host=host,
                      addresses=addresses, elapsed_ms=round((time.monotonic() - start) * 1000, 1))]
+    if literal is None and "." not in host and host != "localhost":
+        results.append(check("WARN", "DNS_SHORT_NAME", "dns", name, host=host))
     actual = {str(ipaddress.ip_address(a[1])) for a in addresses}
     expected = set(endpoint["expected_ips"])
     if expected:
@@ -379,12 +407,27 @@ def probe_endpoint(endpoint, timeout, max_addresses):
         results.append(check("PASS" if matched else "FAIL",
                              "DNS_COUNT_MATCH" if matched else "DNS_COUNT_MISMATCH",
                              "dns_mapping", name, expected=count, observed=len(addresses)))
+    # A failed expectation may identify an unintended destination. Do not connect.
+    return results, [] if any(row["status"] == "FAIL" for row in results) else addresses
+
+
+def probe_addresses(endpoint, addresses, timeout, max_addresses):
+    name = endpoint["name"]
+    if not addresses:
+        return [check("SKIP", "CONNECTIVITY_BLOCKED_BY_DNS", "tcp", name)]
+    results = []
     if len(addresses) > max_addresses:
         results.append(check("WARN", "ADDRESS_COVERAGE_INCOMPLETE", "coverage", name,
                              tested=max_addresses, total=len(addresses)))
     for address in addresses[:max_addresses]:
         results.extend(socket_probe(endpoint, address, timeout))
     return results
+
+
+def probe_endpoint(endpoint, timeout, max_addresses):
+    """Convenience check of one endpoint, preserving DNS-before-connectivity."""
+    results, addresses = resolve_endpoint(endpoint, timeout)
+    return results + probe_addresses(endpoint, addresses, timeout, max_addresses)
 
 
 def runtime_context(label):
@@ -400,27 +443,52 @@ def runtime_context(label):
                 connection_path="Direct sockets; HTTP proxies and Oracle DSN proxy options are not used")
 
 
-def run_diagnostics(config, label="runtime", oracle_probe=False, oracle_suppressed=()):
+def run_diagnostics(config, label="runtime", oracle_probe=False, oracle_suppressed=(), dns_only=False):
+    if dns_only and oracle_probe:
+        raise ConfigurationError("DNS-only checks cannot enable an Oracle login")
     config = validate_config(config)
-    results = []
+    results, plans, primary = [], [], {}
+    # Phase 1 resolves every configured name, including supplemental listeners,
+    # before any TCP/TLS socket or database login is attempted in this sample.
     for endpoint in config["endpoints"]:
-        results.extend(probe_endpoint(endpoint, config["timeout_seconds"], config["max_addresses"]))
+        checks, addresses = resolve_endpoint(endpoint, config["timeout_seconds"])
+        results.extend(checks)
+        plan = {"endpoint": endpoint, "addresses": addresses}
+        primary[endpoint["name"]] = plan
+        plans.append(plan)
         for index, target in enumerate(endpoint["redirect_targets"], 1):
             child = dict(target, name=endpoint["name"] + ":listener-" + str(index))
-            results.extend(probe_endpoint(child, config["timeout_seconds"], config["max_addresses"]))
+            checks, addresses = resolve_endpoint(child, config["timeout_seconds"])
+            results.extend(checks)
+            plans.append({"endpoint": child, "addresses": addresses})
+    # Phase 2 uses the addresses observed in this sample. Failed targets are
+    # explicitly skipped; other targets can still provide comparison evidence.
+    if not dns_only:
+        for plan in plans:
+            plan["network"] = probe_addresses(plan["endpoint"], plan["addresses"],
+                                              config["timeout_seconds"], config["max_addresses"])
+            results.extend(plan["network"])
+    # Phase 3 is opt-in and never retries login after failed prerequisites.
+    for endpoint in config["endpoints"] if not dns_only else []:
+        plan = primary[endpoint["name"]]
         oracle_ok = False
         if oracle_probe and endpoint["name"] in oracle_suppressed:
             results.append(check("SKIP", "ORACLE_RETRY_SUPPRESSED", "oracle", endpoint["name"]))
         elif oracle_probe and "oracle" in endpoint:
-            start = time.monotonic()
-            request = {"endpoint": endpoint, "timeout": config["timeout_seconds"]}
-            response = child_json(ORACLE_CODE, request, config["oracle_timeout_seconds"])
-            if "error" in response:
-                response = dict(status="FAIL", code="ORACLE_TIMEOUT" if response["error"] == "TIMEOUT" else "ORACLE_PROCESS_FAILED")
-            oracle_ok = response["status"] == "PASS"
-            results.append(check(response["status"], response["code"], "oracle", endpoint["name"],
-                                 client_mode=response.get("client_mode"),
-                                 elapsed_ms=round((time.monotonic() - start) * 1000, 1)))
+            if not plan["addresses"]:
+                results.append(check("SKIP", "ORACLE_BLOCKED_BY_DNS", "oracle", endpoint["name"]))
+            elif not any(row["code"] == "TCP_CONNECTED" for row in plan["network"]):
+                results.append(check("SKIP", "ORACLE_BLOCKED_BY_TCP", "oracle", endpoint["name"]))
+            else:
+                start = time.monotonic()
+                request = {"endpoint": endpoint, "timeout": config["timeout_seconds"]}
+                response = child_json(ORACLE_CODE, request, config["oracle_timeout_seconds"])
+                if "error" in response:
+                    response = dict(status="FAIL", code="ORACLE_TIMEOUT" if response["error"] == "TIMEOUT" else "ORACLE_PROCESS_FAILED")
+                oracle_ok = response["status"] == "PASS"
+                results.append(check(response["status"], response["code"], "oracle", endpoint["name"],
+                                     client_mode=response.get("client_mode"),
+                                     elapsed_ms=round((time.monotonic() - start) * 1000, 1)))
         else:
             results.append(check("SKIP" if not oracle_probe else "WARN", "ORACLE_PROBE_NOT_ENABLED" if not oracle_probe else "ORACLE_PROBE_NOT_CONFIGURED",
                                  "oracle", endpoint["name"]))
@@ -431,8 +499,13 @@ def run_diagnostics(config, label="runtime", oracle_probe=False, oracle_suppress
                                  supplied_listener_targets=len(endpoint["redirect_targets"])))
     counts = dict(Counter(row["status"] for row in results))
     status = "NOT_RUN" if not results else "FAIL" if counts.get("FAIL") else "WARN" if counts.get("WARN") else "PASS"
+    if dns_only and status == "PASS" and not any(row["code"] == "DNS_RESOLVED" for row in results):
+        # Numeric-only targets cannot establish successful hostname resolution.
+        status = "NOT_RUN"
     return dict(version=VERSION, generated_at_utc=datetime.now(timezone.utc).isoformat(),
                 runtime=runtime_context(label), status=status, counts=counts,
+                test_scope="dns_only" if dns_only else "network_and_oracle" if oracle_probe else "network",
+                not_run_stages=["tcp", "tls", "oracle", "scan_redirect"] if dns_only else [],
                 limits=["Runtime-local observations; does not inspect OCI routes, NSGs, PE/RCE configuration, or database server state.",
                         "Customers inspect their own permitted resources; service-managed CoreDNS, NSGs and internal RCE/proxy state require Oracle Support.",
                         "Raw socket/TLS probes do not exercise Oracle Net or wallet authentication.",
@@ -441,26 +514,28 @@ def run_diagnostics(config, label="runtime", oracle_probe=False, oracle_suppress
                 checks=results)
 
 
-def run_samples(config, label="runtime", oracle_probe=False, sample_count=1, interval_seconds=5):
+def run_samples(config, label="runtime", oracle_probe=False, sample_count=1, interval_seconds=5, dns_only=False):
     """Collect bounded samples; retain failures even if a later sample passes."""
     _number(sample_count, 1, 10, "sample_count", integer=True)
     _number(interval_seconds, 0, 60, "interval_seconds")
     config = validate_config(config)
+    if dns_only and oracle_probe:
+        raise ConfigurationError("DNS-only checks cannot enable an Oracle login")
     if sample_count == 1 or not config["endpoints"]:
-        return run_diagnostics(config, label, oracle_probe)
+        return run_diagnostics(config, label, oracle_probe, dns_only=dns_only)
     checks, statuses, starts, suppressed = [], [], [], set()
     for index in range(1, sample_count + 1):
         if index > 1:
             time.sleep(interval_seconds)
         starts.append(datetime.now(timezone.utc).isoformat())
-        report = run_diagnostics(config, label, oracle_probe, oracle_suppressed=suppressed)
+        report = run_diagnostics(config, label, oracle_probe, oracle_suppressed=suppressed, dns_only=dns_only)
         statuses.append(report["status"])
         suppressed.update(row["endpoint"] for row in report["checks"]
                           if row["stage"] == "oracle" and row["code"] in {"ORA-01017", "ORA-28000", "ORA-28001"})
         checks.extend(dict(row, sample_index=index) for row in report["checks"])
     counts = dict(Counter(row["status"] for row in checks))
     report.update(checks=checks, counts=counts,
-                  status="FAIL" if counts.get("FAIL") else "WARN" if counts.get("WARN") else "PASS",
+                  status="FAIL" if counts.get("FAIL") else "WARN" if counts.get("WARN") else "NOT_RUN" if all(s == "NOT_RUN" for s in statuses) else "PASS",
                   sampling={"sample_count": sample_count, "interval_seconds": interval_seconds,
                             "interval_policy": "Pause after the previous sample completes",
                             "started_at_utc": starts, "sample_statuses": statuses,
@@ -469,14 +544,21 @@ def run_samples(config, label="runtime", oracle_probe=False, sample_count=1, int
     return report
 
 
-def print_report(report):
-    print("AIDP connectivity: " + report["status"] + " | " + report["runtime"]["label"])
+def print_report(report, max_rows=None):
+    if max_rows is not None:
+        _number(max_rows, 1, 1000, "max_rows", integer=True)
+    print("AIDP diagnostics: " + report["status"] + " | Scope: " + report.get("test_scope", "runtime") + " | " + report["runtime"]["label"])
+    print("Runtime: " + report["runtime"]["hostname"] + " | Checks: " + str(report["counts"]))
+    if report.get("not_run_stages"):
+        print("Not run: " + ", ".join(report["not_run_stages"]))
     if "sampling" in report:
         print("Sample outcomes: " + ", ".join(report["sampling"]["sample_statuses"]))
-    for row in report["checks"]:
+    for row in report["checks"][:max_rows]:
         location = row.get("ip", row.get("host", ""))
         sample = "sample=" + str(row["sample_index"]) + " " if "sample_index" in row else ""
         print(sample + "{status:4} {endpoint} {stage} {code} {location}".format(location=location, **row))
+        if row.get("addresses"):
+            print("     Addresses: " + ", ".join(family + " " + ip for family, ip in row["addresses"]))
         if row.get("next_step"):
             print("     Customer: " + row["next_step"])
         if row.get("support_next_step"):
@@ -485,6 +567,8 @@ def print_report(report):
             print("     Runbook: " + row["runbook_ref"])
     if not report["checks"]:
         print("No endpoints configured; no network probes ran.")
+    elif max_rows is not None and len(report["checks"]) > max_rows:
+        print("Display truncated; all " + str(len(report["checks"])) + " checks are retained in the report and JSON export.")
 
 
 def main(argv=None):
@@ -493,12 +577,13 @@ def main(argv=None):
     parser.add_argument("--output", help="Optional JSON report path")
     parser.add_argument("--label", default="AI Compute runtime", help="Network vantage point label")
     parser.add_argument("--oracle-probe", action="store_true", help="Enable one login and SELECT 1 per configured endpoint per sample")
+    parser.add_argument("--dns-only", action="store_true", help="Resolve names and compare confirmed expectations without TCP/TLS or database login")
     parser.add_argument("--samples", type=int, default=1, help="Collect 1-10 samples; default 1")
     parser.add_argument("--interval", type=float, default=5, help="Pause 0-60 seconds between completed samples")
     args = parser.parse_args(argv)
     try:
         report = run_samples(json.loads(Path(args.config).read_text()), args.label, args.oracle_probe,
-                             args.samples, args.interval)
+                             args.samples, args.interval, dns_only=args.dns_only)
         print_report(report)
         if args.output:
             Path(args.output).write_text(json.dumps(report, indent=2) + "\n")

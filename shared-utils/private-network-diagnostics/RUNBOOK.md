@@ -27,7 +27,17 @@ Workbench exposes customer-facing private-network settings, and the documented w
 1. Record the region, UTC failure window, workspace, affected Compute/AI Compute, and original notebook/catalog/job/agent operation. Include request, command or job IDs if already available. Missing service-internal identifiers do not prevent escalation.
 2. Obtain the actual destination hostname, listener port and protocol from the connection information. A TNS alias such as `dbname_high` is not an endpoint HOST. Keep credentials and credential-bearing descriptors out of evidence.
 3. Run from the affected runtime. A notebook kernel, Spark executor, default/catalog Compute, AI Compute and a customer-subnet VM can use different paths. If the actual failing runtime is not accessible, record that limit and ask Support to correlate it; do not substitute another runtime and declare success.
-4. Start with network-only probes. From the script directory in the affected runtime:
+4. Start with **DNS resolution only**. From the script directory in the affected runtime:
+
+   ```bash
+   python3 ai_compute_network_diagnostics.py --config targets.json --dns-only \
+     --samples 3 --interval 10 --label "Affected runtime" \
+     --output dns-before.json
+   ```
+
+   In the notebook, configure section 1 and run section 3 with `RUN_CONNECTIVITY_CHECKS = False`. Use real targets; `.invalid` placeholders are rejected. Leave `expected_ips` empty and omit `expected_dns_count` unless the runtime expectations have been confirmed. DNS-only PASS covers resolution and configured expectations; TCP/TLS, login and redirects remain untested.
+
+5. Review DNS results and correct the failed name/confirmed expectation with the appropriate owner. Then run connectivity with a fresh report:
 
    ```bash
    python3 ai_compute_network_diagnostics.py --config targets.json \
@@ -35,9 +45,7 @@ Workbench exposes customer-facing private-network settings, and the documented w
      --output connectivity-before.json
    ```
 
-   In the notebook, configure section 1 and run top-to-bottom with `RUN_ORACLE_PROBE = False`. Use real targets; `.invalid` placeholders are rejected. Leave `expected_ips` empty and omit `expected_dns_count` unless the runtime expectations have been confirmed.
-
-5. Select the earliest failed network stage below. If DNS fails, TCP/TLS are not tested for that endpoint. If those pass, investigate the optional Oracle client and original application settings. A warning or skipped check identifies missing coverage, not a proven outage.
+   In the notebook, enable `RUN_CONNECTIVITY_CHECKS`, rerun the configuration cell and section 4. Each sample resolves all configured names again before testing every returned address up to the cap. Failed DNS/expectations skip TCP/TLS and login for that target; healthy comparison targets continue. No successful tested TCP address skips an enabled Oracle login. If transport passes, investigate the optional client and original application settings. A warning or skipped check records missing coverage, not a proven outage.
 
 Customer-subnet testing is a useful comparison where access is permitted. Cloud Shell or a VM must actually be attached to the relevant customer network for that comparison; a general internet test is not equivalent. Even a same-subnet success cannot validate the service-side path. [AIDP private connectivity architecture](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
 
@@ -51,7 +59,9 @@ Capture the existing customer-visible settings and identify the specific correct
 
 ## DNS failure or Oracle host-resolution failure
 
-**Codes:** `DNS_ERROR`, `DNS_TIMEOUT`, `DNS_NO_ADDRESSES`, `ORA-17868`; the original application might report `UnknownHostException`.
+**Codes:** `DNS_ERROR`, `DNS_NAME_NOT_FOUND`, `DNS_TEMPORARY_FAILURE`, `DNS_TIMEOUT`, `DNS_NO_ADDRESSES`, `DNS_SHORT_NAME`, `DNS_IP_LITERAL`, `CONNECTIVITY_BLOCKED_BY_DNS`, `ORACLE_BLOCKED_BY_DNS`, `ORA-17868`; the original application might report `UnknownHostException`.
+
+Name-not-found and temporary-failure codes describe the system resolver's result; they do not establish the DNS server's response code, TTL or forwarding cause. `DNS_IP_LITERAL` skips hostname resolution; an IP socket success does not validate the original FQDN. Short names require confirmation of the intended descriptor HOST and resolver search behavior. A blocked check makes no destination connection.
 
 **Customer diagnosis and correction**
 
@@ -59,6 +69,7 @@ Capture the existing customer-visible settings and identify the specific correct
 2. If JDBC uses an alias, verify the application's `tnsnames.ora`, `TNS_ADMIN` and wallet setup separately. The explicit Python probe does not reproduce JDBC alias lookup. [Oracle JDBC alias configuration](https://docs.oracle.com/en/database/oracle/oracle-database/21/jajdb/oracle/jdbc/OracleDriver.html)
 3. Have the workspace administrator verify the permitted data-source FQDNs and relevant private/advanced-DNS settings. Use [workspace change precautions](#workspace) if correction is needed.
 4. Have the network administrator verify customer-owned private DNS records/views and forwarding to on-premises DNS. If that resolver cannot resolve the destination, correct that customer DNS configuration first. [OCI private DNS](https://docs.oracle.com/en-us/iaas/Content/DNS/Tasks/privatedns.htm), [DNS troubleshooting](https://docs.oracle.com/en-us/iaas/Content/DNS/Tasks/troubleshooting.htm)
+5. Compare the exact same target from the failing runtime and a known-working private comparison runtime. Catalog/default Compute and sampled Spark executors must be checked on their own paths. If Python resolves an explicit host while JDBC still fails, have the workload owner check its actual descriptor/alias, JVM resolver/search configuration and cached lookup behavior; a new Python process cannot validate the JVM's cache. Retest the original JDBC/UDF operation after the proven correction.
 
 **Escalate:** If the customer DNS and visible workspace settings are correct but the affected runtime still fails, provide the before report and comparisons. Ask Oracle Support to inspect effective attachment and service-managed DNS/CoreDNS/mapping propagation. For a service-internal dependency, use Support; do not add its internal DNS name to a customer allowlist.
 
@@ -70,6 +81,8 @@ Capture the existing customer-visible settings and identify the specific correct
 
 **Codes:** `DNS_EXPECTATION_MISMATCH`, `DNS_COUNT_MISMATCH`.
 
+The tool skips destination connectivity after a failed supplied expectation. Review the expectation before contacting an unintended or unverified destination; removing an unverified expectation is a diagnostic configuration correction.
+
 1. Confirm where the expected set/count came from and whether it applies to this runtime. Customer-side database IPs can differ from service-side translated/proxy addresses.
 2. If the expectation is unverified, remove it and rerun observation-only checks. This corrects the diagnostic configuration; it does not prove the network was repaired.
 3. Ask Oracle Support for mapping confirmation if the runtime expectation is not customer-visible. Do not create/edit RCE mappings or change CoreDNS yourself.
@@ -80,7 +93,9 @@ Capture the existing customer-visible settings and identify the specific correct
 
 ## TCP timeout, refusal, route or socket error
 
-**Codes:** `TCP_TIMEOUT`, `TCP_REFUSED`, `TCP_NO_ROUTE`, `TCP_ERROR`.
+**Codes:** `TCP_TIMEOUT`, `TCP_REFUSED`, `TCP_NO_ROUTE`, `TCP_ERROR`, `ORACLE_BLOCKED_BY_TCP`.
+
+Inspect each tested address. A single failed path remains in the report even if another path passes; this can explain intermittent or RAC address selection failures. If no tested address accepts TCP, the tool skips the optional database login. Fix connectivity first; a database login is not a substitute for a failed listener test.
 
 1. Confirm the correct listener port and TCP/TCPS selection with the database/service owner. For refusal, ask that owner whether the destination listener is available; the rejecting device is not identified by the result alone.
 2. Ask the customer network administrator to review destination ingress, applicable customer-owned egress/security-list rules, peering/routes and return routing. For on-premises destinations, include the DRG, VPN/FastConnect, firewalls and the return path.

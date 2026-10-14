@@ -49,8 +49,10 @@ where this notebook's Python kernel runs; confirm that location in your AIDP
 setup. An optional executor sample is available below. The initial empty target
 list generates no network traffic. Python 3.9+ is required.
 
-The checks identify DNS, expected mapping, TCP, TLS, and optional Oracle client
-issues. They do not change network configuration. A failed attempt provides
+Run **DNS resolution first**, then enable connectivity checks. Each connectivity
+sample resolves all configured names before TCP/TLS and optional Oracle login.
+DNS failures or expectation mismatches skip downstream probes for that target.
+The checks do not change network configuration. A failed attempt provides
 evidence and investigation hints, rather than a definitive network root cause.
 
 Use the [customer runbook](RUNBOOK.md) for diagnosis, correction by the right
@@ -110,6 +112,7 @@ CONFIG = {
     "endpoints": [],
 }
 RUNTIME_LABEL = "Compute notebook Python runtime"
+RUN_CONNECTIVITY_CHECKS = False  # Enable after reviewing section 3 DNS results.
 RUN_ORACLE_PROBE = False
 REPEAT_SAMPLES = 1  # Opt in to 2-10 samples for intermittent failures.
 SAMPLE_INTERVAL_SECONDS = 5  # Pause after each completed sample, 0-60 seconds.
@@ -127,7 +130,44 @@ sample; repeat sampling is optional and bounded to ten samples.
     ]
     cells.extend(cell("code", section, hidden=True) for section in sections)
     cells.extend([
-        cell("markdown", """## 3. Run from the notebook runtime
+        cell("markdown", """## 3. Check DNS resolution first
+
+Resolve the exact application host, plus explicitly supplied SCAN listener names.
+Review every returned address and any confirmed runtime-visible expectations.
+This step makes no destination TCP/TLS connection and no database login; DNS-only
+PASS does not verify connectivity. Numeric IP targets skip hostname resolution.
+
+For `DNS_NAME_NOT_FOUND`, verify the actual descriptor HOST and customer DNS.
+For temporary failures/timeouts, retain repeated samples and compare the affected
+runtime with a known-working private target. System-resolver results do not reveal
+DNS response codes or TTLs. Customer DNS and service-managed CoreDNS checks have
+separate owners; follow the [DNS runbook](RUNBOOK.md#dns).
+
+Use the actual catalog/default Compute for catalog failures, and executor samples
+for executor-side UDF dependencies. Success from another runtime is comparison
+evidence. If an explicit hostname resolves but JDBC reports UnknownHostException,
+validate its alias configuration and JVM resolver with the workload owner.
+"""),
+        cell("code", """if CONFIG_PATH:
+    CONFIG = json.loads(Path(CONFIG_PATH).read_text())
+CONFIG = validate_config(CONFIG)  # Validate all destinations before probing.
+
+def show_summary(result, max_rows=40):
+    print_report(result, max_rows=max_rows)
+
+dns_report = run_samples(CONFIG, label=RUNTIME_LABEL, dns_only=True,
+                         sample_count=REPEAT_SAMPLES, interval_seconds=SAMPLE_INTERVAL_SECONDS)
+show_summary(dns_report)
+"""),
+        cell("markdown", """## 4. Check connectivity after DNS
+
+After reviewing DNS results, set `RUN_CONNECTIVITY_CHECKS = True` in section 1
+and rerun the configuration cell and this cell. Each sample resolves names again
+to avoid using an old report.
+Targets with failed DNS/expectations skip TCP/TLS and database login; other targets
+continue as comparisons. Every returned address is checked up to the configured cap.
+If no tested address accepts TCP, the Oracle login is skipped. TCP success permits
+the optional Oracle probe; raw mTLS warnings need the compatible wallet-backed client.
 
 The optional Oracle probe needs an approved `python-oracledb` installation and
 the environment variables named in each endpoint's `oracle` settings. It uses
@@ -147,38 +187,21 @@ samples pass. Each enabled Oracle probe can attempt a login per sample; after
 ORA-01017, ORA-28000 or ORA-28001, further logins to that endpoint are skipped.
 The interval is a pause after the previous sample completes, not a fixed cadence.
 """),
-        cell("code", """if CONFIG_PATH:
-    CONFIG = json.loads(Path(CONFIG_PATH).read_text())
-CONFIG = validate_config(CONFIG)  # Validate all destinations before probing.
-report = run_samples(CONFIG, label=RUNTIME_LABEL, oracle_probe=RUN_ORACLE_PROBE,
-                     sample_count=REPEAT_SAMPLES, interval_seconds=SAMPLE_INTERVAL_SECONDS)
-
-def show_summary(result, max_rows=40):
-    print("AIDP connectivity:", result["status"], "|", result["runtime"]["label"])
-    print("Runtime:", result["runtime"]["hostname"], "| Checks:", result["counts"])
-    if "sampling" in result:
-        print("Sample outcomes:", result["sampling"]["sample_statuses"])
-    if not result["checks"]:
-        print("Configure endpoints in section 1 and rerun; no network probes ran.")
-        return
-    rows = sorted(result["checks"], key=lambda row: {"FAIL": 0, "WARN": 1, "SKIP": 2, "PASS": 3}[row["status"]])
-    for row in rows[:max_rows]:
-        print("sample", row.get("sample_index", 1), row["status"], row["endpoint"], row["stage"], row["code"], row.get("ip", ""))
-        if row.get("next_step"):
-            print("  Customer:", row["next_step"])
-        if row.get("support_next_step"):
-            print("  Oracle Support:", row["support_next_step"])
-        if row.get("runbook_ref"):
-            print("  Runbook:", row["runbook_ref"])
-    if len(rows) > max_rows:
-        print("Display truncated; all", len(rows), "checks are retained in the report variable and JSON export.")
-
-show_summary(report)
+        cell("code", """connectivity_status = "NOT_REQUESTED"
+report = dns_report
+if RUN_CONNECTIVITY_CHECKS:
+    report = run_samples(CONFIG, label=RUNTIME_LABEL, oracle_probe=RUN_ORACLE_PROBE,
+                         sample_count=REPEAT_SAMPLES, interval_seconds=SAMPLE_INTERVAL_SECONDS)
+    connectivity_status = report["status"]
+    show_summary(report)
+else:
+    print("Connectivity not requested. Review DNS results, then enable RUN_CONNECTIVITY_CHECKS in section 1.")
 """),
-        cell("markdown", """## 4. Optional Spark executor sample
+        cell("markdown", """## 5. Optional Spark executor sample
 
 Leave the partition count at zero for notebook-only checks. This sample runs
-network checks without database login so it does not distribute credentials.
+DNS-only checks initially, and network checks when `RUN_CONNECTIVITY_CHECKS` is
+enabled, without database login so it does not distribute credentials.
 It requires classic PySpark RDD support; Spark Connect runtimes without RDDs
 are explicitly skipped. Oracle wallet/CA files may be located differently on
 executors; deploy any configured CA bundle there before sampling.
@@ -208,6 +231,7 @@ if EXECUTOR_SAMPLE_PARTITIONS:
         def probe_partition(iterator):
             try:
                 yield run_samples(CONFIG, label="Spark executor sample", oracle_probe=False,
+                                  dns_only=not RUN_CONNECTIVITY_CHECKS,
                                   sample_count=REPEAT_SAMPLES, interval_seconds=SAMPLE_INTERVAL_SECONDS)
             except (ValueError, OSError):
                 # For example, a CA file mounted only in the notebook runtime.
@@ -233,7 +257,7 @@ if EXECUTOR_SAMPLE_PARTITIONS:
 else:
     print("Executor sample not requested; notebook results do not verify executors.")
 """),
-        cell("markdown", """## 5. Export evidence and interpret results
+        cell("markdown", """## 6. Export evidence and interpret results
 
 Start with the failed stage's [runbook section](RUNBOOK.md). Verify your endpoint
 and client settings, then involve the customer network/database/workspace owner
@@ -255,6 +279,8 @@ application-specific check. Handle exported endpoint/network details as
 operational evidence.
 """),
         cell("code", """evidence = {
+    "dns_resolution": dns_report,
+    "connectivity_status": connectivity_status,
     "notebook_runtime": report,
     "executor_sample_status": executor_sample_status,
     "executor_samples": executor_reports,
@@ -269,7 +295,7 @@ else:
     notebook = dict(cells=cells, metadata={
         "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
         "language_info": {"name": "python", "version": "3.9"},
-        "aidp_diagnostics": {"source": "shared-utils/private-network-diagnostics/ai_compute_network_diagnostics.py", "version": "1.2"},
+        "aidp_diagnostics": {"source": "shared-utils/private-network-diagnostics/ai_compute_network_diagnostics.py", "version": "1.3"},
     }, nbformat=4, nbformat_minor=5)
     try:
         import nbformat
