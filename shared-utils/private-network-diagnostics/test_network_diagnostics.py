@@ -19,11 +19,23 @@ import threading
 from types import SimpleNamespace
 import unittest
 from unittest import mock
+import uuid
 
 DIRECTORY = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("diagnostics", DIRECTORY / "ai_compute_network_diagnostics.py")
 diagnostics = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(diagnostics)
+
+
+def oracle_fixture_environment(directory):
+    # These per-run dummy values reach only the temporary stub driver below.
+    # They are never credentials for a database or other external service.
+    return {
+        "PYTHONPATH": directory,
+        "TEST_DB_USER": "fixture-user-" + uuid.uuid4().hex,
+        "TEST_DB_PASSWORD": uuid.uuid4().hex,
+        "TEST_DB_SERVICE": "fixture-service-" + uuid.uuid4().hex,
+    }
 
 
 def config(**overrides):
@@ -358,19 +370,24 @@ def connect(**kwargs):
 '''
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "oracledb.py").write_text(stub)
-            environment = dict(PYTHONPATH=directory, TEST_DB_USER="secret-user", TEST_DB_PASSWORD="secret-password", TEST_DB_SERVICE="secret-service")
+            environment = oracle_fixture_environment(directory)
             cfg = config(kind="scan", oracle={"user_env": "TEST_DB_USER", "password_env": "TEST_DB_PASSWORD", "service_name_env": "TEST_DB_SERVICE"})
             with mock.patch.dict(os.environ, environment), mock.patch.object(diagnostics, "probe_endpoint", return_value=[]):
                 report = diagnostics.run_diagnostics(cfg, oracle_probe=True)
             self.assertEqual(report["status"], "PASS")
             self.assertIn("SCAN_SINGLE_CONNECTION_VERIFIED", {c["code"] for c in report["checks"]})
-            self.assertNotIn("secret-", json.dumps(report))
+            for key in ("TEST_DB_USER", "TEST_DB_PASSWORD", "TEST_DB_SERVICE"):
+                self.assertNotIn(environment[key], json.dumps(report))
 
     def test_oracle_error_is_sanitized(self):
-        stub = 'def connect(**kwargs): raise RuntimeError("ORA-01017 secret-password secret-service")\n'
+        stub = '''
+import os
+def connect(**kwargs):
+    raise RuntimeError("ORA-01017 " + os.environ["TEST_DB_PASSWORD"] + " " + os.environ["TEST_DB_SERVICE"])
+'''
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "oracledb.py").write_text(stub)
-            environment = dict(PYTHONPATH=directory, TEST_DB_USER="secret-user", TEST_DB_PASSWORD="secret-password", TEST_DB_SERVICE="secret-service")
+            environment = oracle_fixture_environment(directory)
             endpoint = diagnostics.validate_config(config(oracle={"user_env": "TEST_DB_USER", "password_env": "TEST_DB_PASSWORD", "service_name_env": "TEST_DB_SERVICE"}))["endpoints"][0]
             with mock.patch.dict(os.environ, environment):
                 result = diagnostics.child_json(diagnostics.ORACLE_CODE, {"endpoint": endpoint, "timeout": 1}, 2)
