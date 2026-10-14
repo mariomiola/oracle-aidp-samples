@@ -1,301 +1,193 @@
-# Customer runbook: AIDP private connectivity
+# AIDP private connectivity: understand your network and fix the failed stage
 
-Use this runbook with the [Compute notebook](AIDP_Compute_Private_Network_Diagnostics.ipynb) or [AI Compute script](ai_compute_network_diagnostics.py). The tools observe a connection attempt from the runtime where they execute. They do not audit or repair network configuration. A failing stage narrows the investigation; it does not prove a specific missing rule or mapping.
+Start in the AIDP environment where the connection fails:
 
-Start with **customer DNS → affected-runtime DNS → per-address connectivity → matching database client → original workload**. Correct the first failed stage, then repeat the checks. Customers can complete this assessment with their workspace, network and database administrators.
+- **Compute:** open the [diagnostic notebook](AIDP_Compute_Private_Network_Diagnostics.ipynb) on the affected Compute. Enter the datasource host and port, run the DNS cells, then the connectivity cell.
+- **AI Compute:** use the [diagnostic script](ai_compute_network_diagnostics.py) through the Python execution interface available in your AI Compute environment. Run its DNS stage, then its connectivity stage. See the [AI Compute example](README.md#ai-compute).
 
-Displayed results show customer actions and a runbook reference by default. JSON also retains conditional `support_next_step` guidance. Use it if customer checks leave the failure unresolved; `--show-support-guidance` or notebook `SHOW_SUPPORT_GUIDANCE = True` displays it. A Support suggestion does not establish a service fault.
+The workflow is **DNS resolution → listener connectivity → existing database client → original operation**. You can begin inside AIDP without a separate VM, Cloud Shell session or terminal. Use the results below to understand the relevant part of your network setup and correct a specific problem.
+
+<a id="network-setup"></a>
+
+## Identify the network path for your datasource
+
+Review your workspace's private-network settings and the datasource's connection information. Record what you know; an unknown field does not prevent a DNS test.
+
+| Detail | What to identify |
+| --- | --- |
+| Workspace network | The selected customer VCN and subnet; confirm this is the workspace used by the failing notebook, job or AI Compute operation. |
+| Destination | Actual HOST, listener PORT and database service from the application's connection information. A TNS alias is not the HOST. |
+| DNS source | Does the name belong to an OCI private zone, another VCN's DNS, or an on-premises DNS server? Which customer VCN resolver view or forwarding rule supplies it? See [VCN private resolver configuration](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/dns-topic-Private-resolver.htm). |
+| Database location | Same VCN, another VCN/region, or on-premises. Identify the relevant peering or DRG/VPN/FastConnect path. |
+| Connection controls | Workspace-selected NSGs, subnet security lists, destination rules/firewall and return routing for the required listener port. |
+| RAC/SCAN, if used | The SCAN hostname/port in workspace settings and the selected database service. |
+
+For ordinary private names, AIDP uses the customer VCN DNS context. The DNS configuration selects the backend destination; AIDP can return a translated address. A translated answer can differ from the database's private IP without indicating a fault. [AIDP private connectivity architecture](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
+
+Keep these two paths distinct:
+
+```text
+DNS path:        datasource name → customer VCN DNS view or forwarding rule → DNS answer
+Connection path: resolved destination + listener port → network route and rules → database
+```
+
+If the DNS server is on-premises, the DNS query itself needs a working network path to that server. Once the name resolves, reaching the database requires its own route and listener-port access. Fixing one path does not establish that the other works.
 
 <a id="start"></a>
 
-## Start with the failed operation
+## Run the checks in your existing AIDP runtime
 
-1. Record the region, UTC failure window, workspace, affected Compute/AI Compute, and original notebook/catalog/job/agent operation. Include request, command or job IDs if already available.
-2. Obtain the actual destination hostname, listener port and protocol from the connection information. A TNS alias such as `dbname_high` is not an endpoint HOST. Keep credentials and credential-bearing descriptors out of evidence.
-3. Establish the [customer DNS baseline](#customer-dns), then run from the affected runtime. A notebook kernel, Spark executor, default/catalog Compute, AI Compute and a customer-subnet VM can use different paths. Record which path each report covers. If a failing runtime is unavailable, continue the customer checks and mark that runtime untested.
-4. Confirm the [existing connection method](#connection-method). Keep its required security settings; a connectivity test does not require changing database policy.
-5. Start with **DNS resolution only**. From the script directory in the affected runtime:
+1. Configure the exact HOST and PORT. Start with ADB; use the selected **Database Connection** information. For EBS, use its database listener. For on-premises databases or SCAN, use the existing application descriptor.
+2. **Compute notebook:** run sections 1, 2 and 3 with `RUN_CONNECTIVITY_CHECKS = False`. **AI Compute script:** call `run_samples(..., dns_only=True)` through your existing Python execution interface. No wallet or database account is needed for DNS.
+3. Review the DNS result using [DNS diagnosis](#dns). Leave `expected_ips` empty and omit `expected_dns_count` unless confirmed for this runtime. An IP literal skips the hostname check.
+4. After DNS succeeds, **Compute notebook:** enable `RUN_CONNECTIVITY_CHECKS`, rerun the configuration cell and section 4. **AI Compute script:** run the connectivity stage with `dns_only=False`. Review each returned address using [connectivity diagnosis](#tcp).
+5. Once the listener is reachable, use your application's existing client and connection method. ADB can use a wallet or its permitted walletless connection; on-premises databases use their configured security. An optional Oracle probe can perform one login and `SELECT 1 FROM DUAL`.
+6. Correct the identified setting, rerun the failed stage and subsequent stages, then repeat the original notebook/job/catalog/AI Compute operation. Keep before/after results separate.
 
-   ```bash
-   python3 ai_compute_network_diagnostics.py --config targets.json --dns-only \
-     --samples 3 --interval 10 --label "Affected runtime" \
-     --output dns-before.json
-   ```
-
-   In the notebook, configure section 1 and run section 3 with `RUN_CONNECTIVITY_CHECKS = False`. Use real targets; `.invalid` placeholders are rejected. Leave `expected_ips` empty and omit `expected_dns_count` unless the runtime expectations have been confirmed. DNS-only PASS covers resolution and configured expectations; TCP/TLS, login and redirects remain untested.
-
-6. Compare DNS outcomes with the customer baseline using the [decision table](#comparison). Correct a wrong hostname, customer DNS configuration or unverified test expectation first. Then run connectivity with a fresh report:
-
-   ```bash
-   python3 ai_compute_network_diagnostics.py --config targets.json \
-     --samples 3 --interval 10 --label "Affected runtime" \
-     --output connectivity-before.json
-   ```
-
-   In the notebook, enable `RUN_CONNECTIVITY_CHECKS`, rerun the configuration cell and section 4. Each sample resolves all configured names again before testing every returned address up to the cap. Failed DNS/expectations skip TCP/TLS and login for that target; healthy comparison targets continue. No successful tested TCP address skips an enabled Oracle login. If transport passes, investigate the optional client and original application settings. A warning or skipped check records missing coverage, not a proven outage.
-
-<a id="customer-dns"></a>
-
-## Establish the customer DNS baseline
-
-For ordinary private database names, use the DNS view of the customer VCN selected by the private workspace as the baseline. Customer-context resolution can return a translated address in AIDP rather than the database's customer-side address. Compare resolution and connection outcomes; do not require those IP sets to be identical. [AIDP private connectivity architecture](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
-
-1. Confirm the selected VCN/subnet in the workspace's private-network settings. Obtain the exact application HOST from the database owner, including its full domain name.
-2. From a permitted VM or privately connected Cloud Shell in that customer network, run the same script and targets with `--dns-only --label "Customer VCN baseline" --output customer-dns-before.json`. Leave runtime IP/count expectations unset. If the script cannot run there, record an equivalent hostname lookup and the resolver used. A general internet or laptop lookup cannot validate a private DNS view.
-3. If resolution fails, have the customer network administrator verify the record and its private zone/view association with the VCN resolver. For on-premises DNS, check the forwarding rule, forwarding endpoint, reachable DNS server and its reply path. Confirm that a forwarding rule selects the intended domain. Correct the identified customer configuration and repeat the lookup. [OCI private DNS](https://docs.oracle.com/en-us/iaas/Content/DNS/Tasks/privatedns.htm), [DNS troubleshooting](https://docs.oracle.com/en-us/iaas/Content/DNS/Tasks/troubleshooting.htm)
-4. After DNS succeeds, run connectivity from this baseline using the actual listener port. Follow the [TCP runbook](#tcp) for a failure. A baseline connection uses its own source address; destination logs for the AIDP attempt are needed to validate the source permitted for AIDP.
-5. Run DNS, then connectivity in the affected AIDP runtime. Keep the reports separate and use the decision table below. A working customer baseline narrows the investigation but does not certify the AIDP path.
-
-The diagnostics observe each machine's system resolver; they do not query a chosen VCN resolver remotely or audit its configuration. A customer DNS baseline alone cannot prove which resolution context or feature is active in a particular AIDP workspace.
-
-<a id="comparison"></a>
-
-## Use the first failed stage to choose a correction
-
-| Observations | Customer action and retest |
-| --- | --- |
-| Customer VCN DNS fails | Correct the HOST, customer DNS record/view or on-premises forwarding identified above. Repeat customer DNS, then AIDP DNS. |
-| Customer DNS passes; AIDP DNS fails | Verify the workspace selects the intended private network and the application uses the same HOST. Review [advanced DNS](#advanced-dns) only for an applicable datasource. Repeat the affected-runtime lookup; retain an unresolved difference for the fallback handoff. |
-| Both resolve, but return different addresses | Keep `expected_ips`/answer count unset unless independently confirmed for each runtime. Translated addresses can be expected. Test each runtime's returned addresses with the original host retained for certificate verification. |
-| Customer baseline TCP fails | Verify listener readiness, customer-owned security rules/routes and return routing. Correct the identified restriction and repeat both paths. |
-| Customer TCP passes; AIDP TCP fails | Confirm the listener/port and destination-visible source for the AIDP attempt. Review customer controls for that source; a rule permitting only the baseline VM does not establish AIDP access. Repeat the affected path after the correction. |
-| AIDP DNS/TCP pass; client or workload fails | Check the existing wallet/trust, account, service, JDBC alias and SCAN configuration according to the reported client error. Retest with the matching client, then the original operation. |
-
-If customer configuration is verified and the affected path remains unsuccessful or unavailable, use the [fallback handoff](#support). Do not make a guessed network change to obtain a passing probe.
-
-<a id="advanced-dns"></a>
-
-## When to review advanced DNS settings
-
-Ordinary private/on-premises names start with customer DNS records, views and forwarding. Avoid adding every failed name to a workspace access list as a general DNS remedy.
-
-Review the workspace's **My data sources require advanced DNS configuration** settings for the documented special cases: network-source requirements involving the customer's in-region Service Gateway, cross-region sources, S3, or an `oraclecloud.com` service behind a private endpoint. The workspace administrator should use the exact datasource FQDNs through the supported interface and follow [workspace change precautions](#workspace). [Documented advanced DNS cases](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aidug/workspaces.html)
-
-These settings do not repair a missing customer DNS record or prove that a private/split-horizon name selects the intended destination. After an applicable change completes, repeat customer DNS, AIDP DNS, listener connectivity and the actual datasource operation. Record an unavailable setting or an unresolved difference; no internal feature flag or service DNS access is required to begin the customer assessment.
-
-<a id="connection-method"></a>
-
-## Does this connection need a wallet or a TLS check?
-
-Use the application's existing connection information. The customer does not need to troubleshoot TLS terminology before running DNS and listener-port checks.
-
-- **ADB with a client wallet for mTLS:** use its mTLS host/port and mount the wallet through the supported runtime mechanism for the optional Oracle connection.
-- **ADB without a wallet:** use its allowed TLS connection information and a compatible client. It is still an encrypted connection.
-- **On-premises Oracle:** ask the DBA for the existing TCP or TCPS descriptor and required client security setup. TCP can use Oracle native network encryption; the absence of a raw TLS check does not certify the connection is unencrypted.
-- **Another on-premises source:** use its real hostname and listener port for network checks, then its own client to validate the required security and login protocol.
-
-A wallet cannot fix a name that does not resolve or an unreachable listener port. Once DNS and TCP pass, a client can still fail because of trust, client certificates/wallet access, credentials or database service settings. TLS/mTLS selection can change the destination port; use the descriptor's port rather than assuming a default. A wallet may contain server trust certificates without being used for mTLS, so do not infer the mode from the file's presence alone. [ADB connection methods](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/connect-download-wallet.html), [Oracle TLS](https://docs.oracle.com/en/database/oracle/oracle-database/26/dbseg/configuring-transport-layer-security-encryption.html)
-
-`MTLS_WALLET_UNVERIFIED` records that the raw probe did not use the wallet. Check the optional Oracle result and original operation to decide whether the wallet-based connection works. A warning from a probe that did not use your wallet is insufficient evidence for a network repair.
-
-<a id="workspace"></a>
-
-## Before changing workspace network settings
-
-Capture the existing customer-visible settings and identify the specific correction. Ask the workspace administrator to make it through the supported Workbench UI/API, preserving other required entries. Coordinate an outage window: Oracle documents that most workspace network changes require existing Compute clusters to be stopped. Wait for the change to complete, then start the required Compute and rerun the affected path. Record the change time and retain the original settings for rollback through the same interface. Do not edit service-network components directly. [Editing a workspace](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aidug/workspaces.html)
+The notebook tests its Python kernel's path. Optional executor sampling tests sampled Spark hosts; notebook success does not establish executor success. If the failing catalog/default Compute or another runtime cannot be tested, record that path as untested.
 
 <a id="dns"></a>
 
-## DNS failure or Oracle host-resolution failure
+## DNS does not resolve the datasource name
 
-**Codes:** `DNS_ERROR`, `DNS_NAME_NOT_FOUND`, `DNS_TEMPORARY_FAILURE`, `DNS_TIMEOUT`, `DNS_NO_ADDRESSES`, `DNS_SHORT_NAME`, `DNS_IP_LITERAL`, `CONNECTIVITY_BLOCKED_BY_DNS`, `ORACLE_BLOCKED_BY_DNS`, `ORA-17868`; the original application might report `UnknownHostException`.
+**Results:** `DNS_NAME_NOT_FOUND`, `DNS_TEMPORARY_FAILURE`, `DNS_TIMEOUT`, `DNS_NO_ADDRESSES`, `DNS_ERROR`, `ORA-17868` or application `UnknownHostException`.
 
-Name-not-found and temporary-failure codes describe the system resolver's result; they do not establish the DNS server's response code, TTL or forwarding cause. `DNS_IP_LITERAL` skips hostname resolution; an IP socket success does not validate the original FQDN. Short names require confirmation of the intended descriptor HOST and resolver search behavior. A blocked check makes no destination connection.
+Check the exact HOST first. If it is correct, follow the DNS source identified in your network setup:
 
-**Customer diagnosis and correction**
+| DNS source | Inspect | Correction and retest |
+| --- | --- | --- |
+| OCI private zone | Correct record, zone/view association with the workspace VCN resolver, and any CNAME target. | Correct the record or view association, then rerun AIDP DNS. |
+| DNS in another VCN | Shared private view or forwarding rule, destination listening endpoint, and the network path to it. | Correct the identified view, forwarding or DNS network restriction, then rerun AIDP DNS. |
+| On-premises DNS | Domain forwarding rule, forwarding endpoint, target DNS server, route through the hybrid connection and DNS replies. | Correct the identified rule, record or DNS-server reachability issue, then rerun AIDP DNS. |
+| Same name has public and private answers | Private zone/view selected for the workspace VCN and the intended record. | Correct an unintended DNS view or record. Different answers outside the private network can be expected. |
 
-1. Verify the exact HOST against current connection information. Correct a wrong/stale host in your application and diagnostic target.
-2. If JDBC uses an alias, verify the application's `tnsnames.ora`, `TNS_ADMIN` and wallet setup separately. The explicit Python probe does not reproduce JDBC alias lookup. [Oracle JDBC alias configuration](https://docs.oracle.com/en/database/oracle/oracle-database/21/jajdb/oracle/jdbc/OracleDriver.html)
-3. Establish the [customer DNS baseline](#customer-dns). Have the network administrator verify customer-owned records/views and forwarding to on-premises DNS; correct a confirmed customer DNS failure first.
-4. Verify the workspace's selected private network and SCAN settings. Review [advanced DNS](#advanced-dns) only for an applicable datasource. Use [workspace change precautions](#workspace) if a specific correction is needed.
-5. Compare the exact same target from the failing runtime and a known-working private comparison runtime. Catalog/default Compute and sampled Spark executors must be checked on their own paths. If Python resolves an explicit host while JDBC still fails, have the workload owner check its actual descriptor/alias, JVM resolver/search configuration and cached lookup behavior; a new Python process cannot validate the JVM's cache. Retest the original JDBC/UDF operation after the proven correction.
+Review DNS view selection and forwarding-rule order when a lookup goes to the wrong server. An earlier matching view or rule can prevent the intended forwarding path from being used. Verify DNS traffic and replies between the forwarding endpoint and the target server, including required UDP/TCP port 53 access. The script's system-resolver result does not reveal the DNS response code, TTL or which rule was selected. [OCI private DNS configuration](https://docs.oracle.com/en-us/iaas/Content/DNS/Tasks/privatedns.htm)
 
-**Escalate:** If the customer DNS and visible workspace settings are correct but the affected runtime still fails, provide the before report and comparisons. Ask Oracle Support to inspect effective attachment and service-managed DNS/CoreDNS/mapping propagation. For a service-internal dependency, use Support; do not add its internal DNS name to a customer allowlist.
+For `DNS_SHORT_NAME`, use the descriptor's full HOST and confirm any intended search suffix. If JDBC uses a TNS alias, verify `tnsnames.ora`, `TNS_ADMIN` and the selected descriptor with that client. Python's explicit HOST lookup does not validate JDBC alias lookup or the JVM's cached DNS answer. [Oracle JDBC alias configuration](https://docs.oracle.com/en/database/oracle/oracle-database/21/jajdb/oracle/jdbc/OracleDriver.html)
 
-**Verify recovery:** DNS resolves the intended destination from the affected runtime, subsequent connection checks pass as applicable, and the original workload succeeds. An alias-related case also requires the original JDBC operation.
+A blocked downstream check means no destination connection was attempted. After DNS resolves, proceed to the listener check and then rerun the original operation.
+
+<a id="customer-dns"></a>
+<a id="comparison"></a>
+
+## Optional comparison when the AIDP result needs explanation
+
+If a DNS or socket failure remains unclear and you already have an accessible VM or private Cloud Shell in the workspace's customer network, compare the **same HOST and PORT** there. This is an additional diagnostic, not a prerequisite to using the AIDP notebook or script.
+
+| Comparison | What it tells you to check |
+| --- | --- |
+| Name fails in both places | HOST, customer DNS record/view or forwarding path. |
+| Name works in the customer VCN but fails in AIDP | Workspace network selection and the exact application HOST; review advanced DNS only for an applicable datasource. |
+| Both resolve with different IPs | Translation or different DNS views may explain this. Test each runtime's returned addresses; do not copy backend IPs into AIDP expectations. |
+| Listener fails in both places | Listener readiness and the route/rules to the datasource. |
+| Listener works from the comparison machine but fails in AIDP | Access rules and return routing for the AIDP source actually observed at the destination. The comparison machine uses a different source. |
+
+Keep results labeled with their runtime and UTC time. A laptop or public Cloud Shell lookup does not validate the workspace's private DNS view. A comparison success does not establish that the affected AIDP path works.
+
+<a id="advanced-dns"></a>
+
+## Check advanced DNS only when it applies
+
+Ordinary private/on-premises names start with the DNS records, views and forwarding described above. A workspace FQDN access entry does not create a missing customer DNS record.
+
+Review **My data sources require advanced DNS configuration** for the documented cases: network-source requirements involving your in-region Service Gateway, cross-region sources, S3, or an `oraclecloud.com` service behind a private endpoint. Enter the applicable datasource FQDNs through the workspace interface, preserve other required entries, and retest the actual connection after the change completes. [Workspace network settings](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aidug/workspaces.html)
 
 <a id="dns-expectations"></a>
 
-## Expected DNS addresses or answer count differ
+## A configured DNS expectation does not match
 
-**Codes:** `DNS_EXPECTATION_MISMATCH`, `DNS_COUNT_MISMATCH`.
+**Results:** `DNS_EXPECTATION_MISMATCH`, `DNS_COUNT_MISMATCH`.
 
-The tool skips destination connectivity after a failed supplied expectation. Review the expectation before contacting an unintended or unverified destination; removing an unverified expectation is a diagnostic configuration correction.
-
-1. Confirm where the expected set/count came from and whether it applies to this runtime. Customer-side database IPs can differ from service-side translated/proxy addresses.
-2. If the expectation is unverified, remove it and rerun observation-only checks. This corrects the diagnostic configuration; it does not prove the network was repaired.
-3. Continue DNS and connectivity without a mapping expectation when it is unavailable. Compare the customer and affected-runtime results using the [decision table](#comparison); mapping confirmation is only needed if that uncertainty prevents diagnosis.
-
-**Verify recovery:** A confirmed expectation matches and the original workload succeeds, or document that mapping comparison remains unverified while the connection works. A SCAN proxy may expose one address; do not require three answers solely because the database uses RAC. [AIDP SCAN proxy behavior](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
+Confirm the expected IP set/count applies to the runtime being tested. If it is unverified, remove that expectation and collect the observed DNS result. This corrects the test configuration; it does not repair the network. AIDP can return translated addresses, and SCAN proxy DNS can return one address. Do not require the customer-side database IPs or three SCAN answers in every runtime. [AIDP DNS and SCAN behavior](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
 
 <a id="tcp"></a>
 
-## TCP timeout, refusal, route or socket error
+## DNS resolves, but the listener cannot be reached
 
-**Codes:** `TCP_TIMEOUT`, `TCP_REFUSED`, `TCP_NO_ROUTE`, `TCP_ERROR`, `ORACLE_BLOCKED_BY_TCP`.
+**Results:** `TCP_TIMEOUT`, `TCP_REFUSED`, `TCP_NO_ROUTE`, `TCP_ERROR`, `ORACLE_BLOCKED_BY_TCP`.
 
-Inspect each tested address. A single failed path remains in the report even if another path passes; this can explain intermittent or RAC address selection failures. If no tested address accepts TCP, the tool skips the optional database login. Fix connectivity first; a database login is not a substitute for a failed listener test.
+1. Confirm the listener PORT from the existing descriptor. For refusal, verify the listener is available; a refusal alone does not identify which device rejected the attempt.
+2. Follow the datasource route: within the VCN, across VCN peering/DRG, or through VPN/FastConnect to on-premises. Check the route table associated with the relevant subnet and the return path.
+3. Review applicable workspace-selected NSGs, subnet security lists, destination rules and firewalls for that listener port. Use the AIDP source **as seen at the destination**, using existing flow/firewall/listener logs where available. A translated DNS destination IP and a comparison VM's source are not that source.
+4. Correct the identified listener, route or rule and rerun connectivity in the affected notebook or AI Compute. Retain a failed address even if another returned address succeeds; this can explain intermittent failures.
 
-1. Confirm the correct listener port and TCP/TCPS selection with the database/service owner. For refusal, ask that owner whether the destination listener is available; the rejecting device is not identified by the result alone.
-2. Ask the customer network administrator to review destination ingress, applicable customer-owned egress/security-list rules, peering/routes and return routing. For on-premises destinations, include the DRG, VPN/FastConnect, firewalls and the return path.
-3. Before correcting a customer rule, establish the **source as seen by the destination**, intended protocol and port. Correlate the AIDP attempt's UTC time with customer-owned flow/firewall/listener logs where available. The notebook hostname, translated DNS destination address and a baseline VM's source are not the AIDP source. If it remains unknown, record that gap and avoid guessing an ingress rule.
-4. Make only the proven customer-owned correction using normal change control. Do not treat a timeout as proof that a specific NSG is wrong.
+A timeout does not identify a particular missing NSG rule. If no tested address accepts TCP, the optional database login is skipped. After listener reachability passes, test the existing database client and original operation.
 
-For ADB private endpoints, the database's customer VCN security configuration governs access; the selected connection information determines the TLS/mTLS listener. Oracle documents mTLS on 1522 and TLS on 1521 or 1522. [ADB private-endpoint access](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/private-endpoints-autonomous.html)
-
-**Escalate:** If the customer path is verified, ask Oracle Support to inspect AIDP service-side NSGs, routing, private connectivity and RCE/proxy health for the recorded attempt. Customers cannot inspect those internal controls.
-
-**Verify recovery:** The intended listener accepts TCP from the affected runtime, required TLS/client checks pass, and the original operation succeeds.
-
+<a id="connection-method"></a>
 <a id="tls"></a>
 
-## TLS validation failure or unverified mTLS wallet
+## Listener reachable: use the connection method you already have
 
-**Codes:** `TLS_VERIFY_FAILED`, `TLS_FAILED`, `MTLS_WALLET_UNVERIFIED`.
+For ADB, follow the selected Database Connection descriptor: use the wallet where that connection requires it, or the permitted walletless method. For on-premises Oracle, use the configured TCP/TCPS descriptor and client security settings. Copy the actual port; do not change database policy to make a probe pass. [ADB connection information](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/connect-download-wallet.html)
 
-1. Confirm that the selected endpoint/port uses TCPS and matches the database TLS/mTLS policy.
-2. Verify the intended certificate hostname and trusted CA with the destination owner. Review your runtime's configured CA bundle/wallet files and accessibility.
-3. For mTLS, use the optional Oracle probe with a properly deployed wallet and compatible client mode. Raw TLS does not load an Oracle wallet, so its warning can remain after a successful Oracle login. [python-oracledb connection configuration](https://python-oracledb.readthedocs.io/en/latest/user_guide/connection_handling.html)
-4. Correct the proven identity, trust or wallet deployment problem. Do not disable verification or replace a hostname with an arbitrary IP to make the test pass.
+`TLS_VERIFY_FAILED` or `TLS_FAILED` calls for checking the endpoint's certificate identity, trust configuration and required client setup. Keep verification enabled. `MTLS_WALLET_UNVERIFIED` means the raw network probe did not test the wallet; validate the wallet with the matching Oracle client. That warning can remain even when the client connects successfully.
 
-**Escalate:** If the compatible client still fails after customer identity/trust/wallet checks, provide its sanitized code and stage results to Oracle Support and the destination owner.
-
-**Verify recovery:** The required client handshake/login and original workload succeed with verification enabled. Record remaining raw-probe warnings as coverage limits.
+Oracle native network encryption can operate over TCP and needs a compatible client. Other on-premises databases need their own client for secure login and application-protocol checks. [Oracle client connection configuration](https://python-oracledb.readthedocs.io/en/latest/user_guide/connection_handling.html)
 
 <a id="scan"></a>
 
-## SCAN socket passes but redirect is unverified or fails
+## SCAN listener reachable: validate the redirected connection
 
-**Code:** `SCAN_REDIRECT_UNVERIFIED`; a real connection can instead produce an Oracle/DPY failure.
+**Result:** `SCAN_REDIRECT_UNVERIFIED`.
 
-1. Ask the workspace administrator to check the configured SCAN FQDN/port and the database owner to confirm the service and advertised listeners.
-2. Enable one Oracle probe with those connection details. A socket-only check does not exercise redirection.
-3. For customer-operated RAC, have its DBA validate the appropriate local listeners/instances and advertised listener identities. For managed database internals, use that service's Support team.
-4. Treat direct `redirect_targets` probes as supplemental. They may use a different path from translated redirects. If the customer configuration/listeners are valid but the connection still fails, ask AIDP Support to inspect the service-managed SCAN proxy and translation.
+Confirm the workspace's SCAN FQDN/port, the database service and the advertised local listeners. Run an actual Oracle connection using the existing descriptor to exercise the selected redirect. For RAC databases you administer, check listener registration and node-specific routing/rules if the redirect fails.
 
-**Verify recovery:** One Oracle connection and `SELECT 1 FROM DUAL` pass, followed by the original workload. That establishes one chosen path; all RAC instances and failover need separate validation. [Oracle RAC SCAN behavior](https://docs.oracle.com/en/database/oracle/oracle-database/18/rilin/about-connecting-to-an-oracle-rac-database-using-scans.html)
+Known `redirect_targets` are supplemental: a direct listener probe can use a different path from the SCAN connection. One successful login and `SELECT 1 FROM DUAL` validate one chosen path, not every RAC instance or failover scenario. Finish by rerunning the original workload. [Oracle RAC SCAN behavior](https://docs.oracle.com/en/database/oracle/oracle-database/18/rilin/about-connecting-to-an-oracle-rac-database-using-scans.html)
 
 <a id="accounts"></a>
 
-## Rejected credentials, locked account or expired password
+## Database rejects the account or password
 
-**Codes:** `ORA-01017`, `ORA-28000`, `ORA-28001`, `ORACLE_RETRY_SUPPRESSED`.
+**Results:** `ORA-01017`, `ORA-28000`, `ORA-28001`, `ORACLE_RETRY_SUPPRESSED`.
 
-Stop login retries and contact the database owner. For a customer-owned account, its DBA should verify authorization/account state, correct the credential issue, and coordinate updating your runtime credential reference. For an Oracle/AIDP service-managed account, including a platform dependency, use Oracle Support; customers are not expected to obtain, change or unlock that account.
+Stop repeated logins. Verify the configured credential reference and review the database account's authorization, lock or expiry state with your DBA. Update the credential reference after correcting the account/password issue, then make one controlled connection and rerun the original operation. Network changes do not fix an account error.
 
-The script suppresses later sampled logins after these errors **within one invocation**. Starting it again starts a new invocation, so do not repeatedly restart login probes against an unresolved account.
-
-**Verify recovery:** After owner confirmation, perform one controlled Oracle probe and the original operation. Network-only success cannot resolve authentication. [ORA-28000](https://docs.oracle.com/en/error-help/db/ora-28000/), [ORA-28001](https://docs.oracle.com/en/error-help/db/ora-28001/), [ORA-01017](https://docs.oracle.com/en/error-help/db/ora-01017/)
+The script suppresses subsequent sampled logins after these errors **within one invocation**. Starting a new invocation enables attempts again; do not restart login tests until the account issue is corrected.
 
 <a id="oracle-service"></a>
 
-## Listener service, instance readiness or access filtering
+## Database service is unavailable or rejects the source
 
-**Codes:** `ORA-12514`, `DPY-6001`, `ORA-12523`, `ORA-12506`.
+**Results:** `ORA-12514`, `DPY-6001`, `ORA-12523`, `ORA-12506`.
 
-Verify the selected service against current database connection information. For customer-operated databases, its DBA can investigate service registration, instance readiness and listener access policy. Customer network/database administrators can verify access controls they own and the destination-visible source. For ADB or another managed database, use its documented connection settings and customer-visible controls; internal listener repairs belong to Oracle Support.
-
-If the same configuration works outside AIDP but fails on the affected AIDP path, provide that comparison to AIDP Support as evidence of differing paths, not proof of a service-network cause.
-
-**Verify recovery:** A login to the intended service and the original operation succeed. A listener TCP connection alone is insufficient. [ORA-12514](https://docs.oracle.com/en/error-help/db/ora-12514/), [ORA-12523](https://docs.oracle.com/en/database/oracle/oracle-database/19/errmg/ORA-12500.html), [python-oracledb errors](https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html)
+Verify the selected service against current connection information and the database's availability. Review listener registration and instance readiness with your DBA where accessible. Check source-based database access controls for the actual AIDP attempt. Retest the client and original operation after the specific correction.
 
 <a id="client"></a>
 
-## Optional Oracle client is missing, unconfigured or incompatible
+## The optional Oracle probe cannot start
 
-**Codes:** `ORACLE_DRIVER_MISSING`, `ORACLE_ENV_MISSING`, `ORACLE_PROBE_NOT_CONFIGURED`, `ORACLE_PROBE_NOT_ENABLED`, `ORA-28759`, `DPI-1047`, `DPY-3001`, `DPY-3010`.
+**Results:** missing driver, environment reference, wallet or client library; `ORA-28759`, `DPY-3010`, `DPY-3001`, `DPI-1047`.
 
-Use the runtime's supported dependency/secret mechanism and the destination's required client mode. Verify the installed driver, needed client libraries and wallet deployment with the workspace/application administrator. Provide environment-variable names in target JSON, and values through the normal secret mechanism. Select Thin mode only when compatible with the destination; it is not a workaround for every Thick-mode dependency error.
-
-A deliberately disabled Oracle probe is a coverage choice, not an outage. If enabling it, follow the [README setup](README.md#optional-database-and-scan-redirect-check). If the supported runtime mechanism fails or is not accessible, ask the administrator or Oracle Support for that supported path rather than modifying service images.
-
-**Verify recovery:** The Oracle probe executes in the affected runtime without prerequisite warnings, and the original connector/application succeeds using its own client configuration.
-
-<a id="coverage"></a>
-
-## Address coverage or IPv6 is incomplete
-
-**Codes:** `ADDRESS_COVERAGE_INCOMPLETE`, `IPV6_SOURCE_UNAVAILABLE`.
-
-Review the returned addresses and `max_addresses` cap. Rerun within the supported cap when more addresses must be tested. Confirm required IPv4/IPv6 connectivity with the network administrator; ask Support about managed-runtime support if the required family cannot be exercised.
-
-**Verify recovery:** Required paths have been tested or the remaining gap is explicitly recorded. An IPv4 pass, omitted address or sampled executor does not certify every path.
-
-<a id="runtime"></a>
-
-## Probe subprocess or executor execution is unavailable
-
-**Codes:** `CHILD_PROCESS_FAILED`, `ORACLE_PROCESS_FAILED`, `EXECUTOR_CONFIG_UNAVAILABLE`; the notebook can also report a skipped/failed executor sample.
-
-Check customer-provided dependencies, configuration files/CA deployment and your supported runtime access. Classic Spark executor sampling requires RDD support; Spark Connect may skip it. If the actual failing runtime cannot be reached or supported execution still fails, supply the runtime/resource and UTC attempt to Support. A probe-process failure does not prove DNS or NSG failure.
-
-**Verify recovery:** The requested probe executes in the intended runtime. Retain missing executor coverage and confirm the original driver/executor operation separately.
+Use the runtime's existing dependency and secret mechanisms. Confirm the selected driver/client mode supports the database and its encryption setup, and that required wallet/client files are available in the runtime. DNS and socket checks do not require the Oracle probe. See the [optional client configuration](README.md#oracle-client).
 
 <a id="unclassified"></a>
 
-## Generic or unclassified Oracle/application connection failure
+## Generic client error or total connection timeout
 
-**Codes:** `DPY-6005`, `ORACLE_TIMEOUT`, `ORACLE_CLIENT_ERROR`, and other unresolved FAIL/WARN codes.
+**Results:** `DPY-6005`, `ORACLE_TIMEOUT` or another unclassified client error.
 
-Compare the recorded network stages with the actual application client configuration. A generic wrapper or total deadline does not identify DNS, TCP, TLS, login, redirect or query as the cause. Do not apply a guessed network change. [python-oracledb error handling](https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html)
+Compare the preceding DNS and TCP results, then the actual client's service, trust/wallet and account configuration. The generic code does not identify a specific network cause. Retain the sanitized code and original-operation outcome; do not select a guessed network correction.
 
-For a service-managed dependency such as AIDP Memory, ask Oracle Support to identify the non-secret destination, underlying error and owner-side outcome. Customers are not expected to obtain internal credentials or configure an unknown platform endpoint in the script. A background retry-exhausted event alone does not prove that an entire chat, deployment or job failed.
+<a id="coverage"></a>
+<a id="runtime"></a>
 
-**Verify recovery:** The owner identifies and corrects the failure, then the original operation succeeds; for service-managed operations, Support must confirm the corresponding outcome.
+## A check could not cover the required path
+
+For `ADDRESS_COVERAGE_INCOMPLETE`, review the address cap and the untested addresses. For `IPV6_SOURCE_UNAVAILABLE`, record that the required IPv6 path is untested. For a child-process or executor failure, check the available runtime dependencies, uploaded files and execution mechanism. An inaccessible runtime remains untested; a different runtime's success does not fill that gap.
+
+<a id="workspace"></a>
+
+## Apply a workspace network correction
+
+Save the existing settings and change only the identified VCN/subnet, NSG, SCAN or applicable advanced DNS setting through the workspace interface. Coordinate the change: Oracle documents that most workspace network changes require existing Compute clusters to be stopped. Wait for completion, start the required Compute and repeat its DNS, connectivity and original-operation checks. [Editing a workspace](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aidug/workspaces.html)
 
 <a id="recovery"></a>
 
-## Verify a correction and decide whether to close
+## Verify the original connection works
 
-Capture a fresh report with the same targets, relevant client settings and affected runtime. Keep before/after files separate:
+Keep before/after results for the same target and affected runtime. Repeat DNS, listener connectivity and the matching client connection, then the original catalog read, JDBC query, notebook/job or AI Compute operation.
 
-```bash
-python3 ai_compute_network_diagnostics.py --config targets.json \
-  --label "Affected runtime after correction" --output connectivity-after.json
-```
-
-After database-owner confirmation, add `--oracle-probe --samples 1` for one controlled database connection where appropriate. Then rerun the original catalog read, JDBC query, notebook/job or AI Compute operation.
-
-Close only when the original operation succeeds on the required path and outstanding skipped/warning coverage is understood. For intermittent failures, observe an appropriate workload window: three samples can miss a problem. Earlier FAIL results remain in a repeated report even if later samples pass; retain them as history rather than treating that report as proof the correction failed.
-
-<a id="ownership"></a>
-
-## Reference: who can investigate and change what?
-
-| Area | Customer action, subject to permissions | Oracle Support boundary |
-| --- | --- | --- |
-| Connection settings and runtime files | Verify your host, port, protocol, service selection, driver, wallet deployment and credential references | Investigate supported dependency/credential mechanisms that fail in managed runtimes |
-| Workspace private connectivity | Your workspace administrator can review documented subnet/NSG selections, DNS configuration and SCAN settings | Inspect effective runtime attachment and service-side application of those settings |
-| Customer VCN and destination | Your network administrator can inspect customer-owned NSGs, security lists, routes, private DNS, peering and on-premises connectivity | Inspect NSGs, routing and connectivity components inside the AIDP service network |
-| Database | Your DBA can manage customer-owned accounts; customer-operated database administrators can inspect their listeners and RAC instances | Investigate service-managed database accounts, listeners and platform dependencies |
-| AIDP service network | Collect observed DNS/socket results and resource identifiers available in the customer interface | Inspect service-managed CoreDNS, DNS/RCE mappings, SCAN proxy translation and service-side NSGs |
-
-A customer is **not expected to access AIDP service-network CoreDNS, internal NSGs or RCE administration**. An inaccessible customer-owned resource is a permissions/administrator handoff; an inaccessible service-owned resource is an Oracle Support handoff. The workspace's selected customer NSGs and the service network's internal NSGs are different controls.
-
-Workbench exposes customer-facing subnet, NSG, SCAN and advanced DNS settings. The API's `dnsZones` field accepts FQDNs for workspace access; it does not create records in your customer DNS. Review advanced DNS only where the documented datasource conditions apply, using the supported interface and your granted permissions. [Workbench workspace configuration](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aidug/workspaces.html), [workspace API schema](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aiwap/op-aidataplatforms-aidataplatformid-workspaces-workspacekey-put.html)
-
-<a id="support"></a>
-
-## Fallback: prepare a private Oracle Support handoff
-
-Use the normal Oracle Support channel for your service. Include only details available to the customer; you do not need service tenancy IDs, Kubernetes namespaces or CoreDNS access.
-
-```text
-Region and UTC start/end:
-AIDP instance / workspace / affected Compute or AI Compute identifiers:
-Original operation and available request/command/job IDs:
-Destination hostname, port, TCP/TCPS, client mode, TLS/mTLS:
-First failed stage and sanitized code:
-Before/after diagnostic reports and test runtime labels:
-Customer-visible workspace configuration reviewed:
-Customer network / database owner findings and comparison vantage points:
-Changes made, UTC time, and results:
-Original workload outcome and remaining coverage limits:
-Requested investigation: correlate the failing runtime/attempt and inspect
-the appropriate service-owned DNS, network, SCAN or dependency component.
-```
-
-Include network metadata in a **private support request**, not a public GitHub issue. Remove passwords, tokens, wallet material and credential-bearing connection strings. Do not attach raw payloads or transcripts containing secrets. Mark unavailable fields as unknown, and preserve the useful target/timing/correlation metadata. [Oracle Support](https://www.oracle.com/support/)
+For intermittent failures, repeat DNS/network sampling and observe the original workload over an appropriate period. Three passing samples can miss a fault; earlier failures remain in the saved history. Keep credentials, wallet contents and credential-bearing descriptors out of diagnostic exports.
 
 ## License
 

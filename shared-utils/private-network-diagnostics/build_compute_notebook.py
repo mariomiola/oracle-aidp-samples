@@ -37,91 +37,71 @@ def build():
     cells = [
         cell("markdown", """# AIDP Compute private network diagnostics
 
+Use this notebook on the Compute where your datasource connection fails.
+Start with ADB, then add EBS database listeners, on-premises databases or RAC SCAN.
+No separate terminal, VM or Cloud Shell session is needed to begin.
+
+1. Identify your workspace network and enter the datasource HOST/PORT below.
+2. Run sections 1, 2 and 3 to check **DNS resolution**.
+3. Review the result, then enable section 4 to check **listener connectivity**.
+4. Use your existing database client and rerun the original operation.
+
+The [runbook](RUNBOOK.md) explains how the results relate to your DNS views,
+forwarding, network routes and connection rules. The notebook embeds the shared
+AI Compute script. Empty targets cause no traffic; network checks need Python
+3.9+ and its standard library. Results cover this Python kernel's path; confirm
+it is the affected Compute. Optional executor sampling is in section 5.
+
 Copyright (c) 2026 Oracle and/or its affiliates. Licensed under the Universal
 Permissive License (UPL), Version 1.0. See the repository LICENSE.txt.
-
-Start with ADB, then add Oracle E-Business Suite database listeners, on-premises
-databases, and RAC SCAN endpoints. This notebook uses the same diagnostics as
-`ai_compute_network_diagnostics.py` and runs without a sibling script or OCI SDK.
-
-Run in the **affected private workspace and Compute**. The default checks run
-where this notebook's Python kernel runs; confirm that location in your AIDP
-setup. An optional executor sample is available below. The initial empty target
-list generates no network traffic. Python 3.9+ is required.
-
-Run **DNS resolution first**, then enable connectivity checks. Each connectivity
-sample resolves all configured names before TCP/TLS and optional Oracle login.
-DNS failures or expectation mismatches skip downstream probes for that target.
-The checks do not change network configuration. A failed attempt provides
-evidence and investigation hints, rather than a definitive network root cause.
-
-Establish the [customer VCN DNS baseline](RUNBOOK.md#customer-dns), then compare
-DNS and connectivity from this affected runtime. Customer-context resolution
-can return translated addresses here; differing IP sets alone are not a fault.
-Use the [decision table](RUNBOOK.md#comparison) to choose a customer correction
-and retest. Review [advanced DNS](RUNBOOK.md#advanced-dns) only for an applicable
-datasource; a workspace access list does not repair a missing customer DNS record.
-
-Keep the customer runbook alongside the notebook or open it from the sample
-repository. Displayed results show customer actions by default. Conditional
-Support guidance is retained in JSON; enable `SHOW_SUPPORT_GUIDANCE` only when
-needed for an unresolved issue. No service-internal access is required to begin.
 """),
-        cell("markdown", """## 1. Configure endpoints
+        cell("markdown", """## 1. Identify your network and configure the datasource
 
-Use the connection method your application already has. DNS and listener-port
-checks do not require a wallet. They establish reachability; the real client
-connection verifies the required security setup and database login.
+Review your workspace's private-network settings and the existing connection.
+Use these details to interpret the DNS and connectivity results. Unknown details
+can be investigated after the first check; they do not prevent running it.
 
-| Existing connection | Network configuration | Connection check after DNS and TCP |
-| --- | --- | --- |
-| ADB with a client wallet for mTLS | `protocol: "tcps"`, `tls_mode: "mtls"` | Compatible Oracle client with the mounted wallet |
-| ADB without a wallet, using allowed TLS | `protocol: "tcps"`, `tls_mode: "tls"` | Server certificate verification and compatible Oracle client |
-| On-premises Oracle using TCP | `protocol: "tcp"` | Existing Oracle client/security settings; no raw TLS check |
-| On-premises Oracle using TCPS | `protocol: "tcps"`, DBA-confirmed TLS/client-certificate settings | Matching Oracle client; wallet only where required |
+| Network detail | What to identify |
+| --- | --- |
+| Workspace VCN/subnet | The customer network selected by this workspace |
+| Datasource HOST/PORT | Actual hostname and listener port from the connection information |
+| DNS source | OCI private zone/view, another VCN's DNS, or on-premises DNS via forwarding |
+| Datasource location | Same VCN, peered VCN/region, or on-premises through DRG/VPN/FastConnect |
+| Connection controls | Applicable workspace-selected NSGs, subnet rules, destination rules and return route |
+| SCAN, if used | Workspace SCAN hostname/port and database service |
 
-For ADB, copy HOST and PORT from the selected **Database Connection** descriptor.
-Both methods are encrypted; mTLS uses 1522, while TLS can use 1521 or 1522.
-For on-premises sources, follow the existing datasource configuration. Oracle
-native network encryption can use TCP and requires compatible client setup;
-other datasource logins require their own client. Wallet presence alone does not
-identify the mode. [Connection-method runbook](RUNBOOK.md#connection-method),
-[ADB connection details](https://docs.oracle.com/en/cloud/paas/autonomous-database/serverless/adbsb/connect-download-wallet.html)
+The customer VCN DNS context selects the backend destination for ordinary private
+names. AIDP can return translated addresses, so do not require the database's
+customer-side IP or a fixed SCAN answer count here. Leave `expected_ips` empty
+and omit `expected_dns_count` unless confirmed for this runtime.
+[AIDP private connectivity architecture](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
 
-`expected_ips` is optional: leave it empty unless the complete runtime-visible
-set is confirmed. Backend customer IPs may differ; continue the network and
-client checks without a mapping inventory. Omit `expected_dns_count` when unknown.
+Copy HOST and PORT from your selected ADB **Database Connection** descriptor,
+or the existing on-premises/EBS/SCAN descriptor. A TNS alias such as `dbname_high`
+is not the actual HOST. Use the current connection method; DNS and listener
+checks do not require a wallet or database login.
 
-For `kind: "scan"`, optionally list known listener VIPs/FQDNs and ports in
-`redirect_targets`. These are supplemental probes. AIDP SCAN proxy DNS can
-expose one address; set `expected_dns_count` only when you know the expected
-runtime behavior. The Oracle client probe is needed to exercise a real redirect.
-[AIDP private connectivity](https://blogs.oracle.com/dataintegration/aidp-private-workspace-connectivity-to-oracle-databases)
-
-Example target to adapt (the `.invalid` placeholder is rejected until replaced):
+Example target to paste into `CONFIG["endpoints"]` below and adapt:
 
 ```python
 {
-    "name": "ADB using a wallet", "kind": "adb",
-    "host": "adb-private.example.invalid", "port": 1522,
-    "protocol": "tcps", "tls_mode": "mtls", "expected_ips": []
+    "name": "ADB", "kind": "adb",
+    "host": "replace-with-your-adb-host.example.invalid",
+    "port": 1522,  # Copy the actual PORT from your connection information.
+    "protocol": "tcps", "tls_mode": "mtls"  # Existing wallet-based method.
 }
 ```
 
-For walletless ADB TLS, select its allowed TLS host/port, set `tls_mode: "tls"`
-and omit wallet environment references from `oracle`. `targets.example.json`
-contains separate ADB wallet and walletless templates, plus cloud EBS, on-premises
-DBs and SCAN. Keep only the endpoints you need.
-Never place passwords or wallet contents in this notebook or target JSON.
+For an existing permitted walletless ADB connection, use its TLS descriptor's
+HOST/PORT and `tls_mode: "tls"`. For on-premises Oracle, use its existing TCP/TCPS
+settings. `targets.example.json` contains templates for each case; keep only the
+targets you need. Replace every `.invalid` hostname before running. Never put
+passwords or wallet contents in target JSON or notebook cells.
 
-Use the actual endpoint HOST in `host`, rather than an Oracle TNS alias such as
-`dbname_high`. Validate alias lookup, `tnsnames.ora`, `TNS_ADMIN` and wallet setup
-with the application's JDBC client. The optional Python probe builds an explicit
-host/service connection and does not reproduce arbitrary JDBC alias resolution.
-
-Include non-database dependencies with `kind: "dependency"`, using their actual
-hostname, port and TCP/TLS policy. UDF service DNS failures can occur even when
-ADB access works. These probes do not validate HTTP, SDK or service functionality.
+For `kind: "scan"`, the real Oracle client connection is needed to exercise
+redirection. Known `redirect_targets` are optional supplemental listener checks.
+For other dependencies, use `kind: "dependency"` with their actual host and port;
+their own client is needed for login and application-protocol checks.
 """),
         cell("code", """# Edit this list, or set CONFIG_PATH to your uploaded target JSON.
 CONFIG_PATH = None
@@ -134,7 +114,6 @@ CONFIG = {
 RUNTIME_LABEL = "Compute notebook Python runtime"
 RUN_CONNECTIVITY_CHECKS = False  # Enable after reviewing section 3 DNS results.
 RUN_ORACLE_PROBE = False
-SHOW_SUPPORT_GUIDANCE = False  # Optional fallback; JSON retains conditional hints.
 REPEAT_SAMPLES = 1  # Opt in to 2-10 samples for intermittent failures.
 SAMPLE_INTERVAL_SECONDS = 5  # Pause after each completed sample, 0-60 seconds.
 EXECUTOR_SAMPLE_PARTITIONS = 0  # Opt in, up to 16; requires classic PySpark RDDs.
@@ -153,28 +132,35 @@ sample; repeat sampling is optional and bounded to ten samples.
     cells.extend([
         cell("markdown", """## 3. Check DNS resolution first
 
-Resolve the exact application host, plus explicitly supplied SCAN listener names.
-Review every returned address and any confirmed runtime-visible expectations.
-This step makes no destination TCP/TLS connection and no database login; DNS-only
-PASS does not verify connectivity. Numeric IP targets skip hostname resolution.
+Run this cell to resolve your actual datasource HOST and any supplied SCAN
+listener names. It makes no destination TCP/TLS connection or database login.
+A DNS-only PASS establishes resolution, not listener reachability.
 
-For `DNS_NAME_NOT_FOUND`, verify the actual descriptor HOST and the customer VCN's
-records, private view and on-premises forwarding. For temporary failures/timeouts,
-retain repeated samples and compare customer DNS with this affected runtime.
-System-resolver results do not reveal DNS response codes, TTLs or the active
-workspace resolution context. Follow the [DNS runbook](RUNBOOK.md#dns).
+If resolution fails, use the network details from section 1:
 
-Use the actual catalog/default Compute for catalog failures, and executor samples
-for executor-side UDF dependencies. Success from another runtime is comparison
-evidence. If an explicit hostname resolves but JDBC reports UnknownHostException,
-validate its alias configuration and JVM resolver with the workload owner.
+| DNS setup | What to inspect for the failed name |
+| --- | --- |
+| OCI private zone | Record and private view attached to the workspace VCN resolver |
+| Another VCN's DNS | Shared view or forwarding rule and path to its listening resolver |
+| On-premises DNS | Domain forwarding rule, endpoint, DNS server and query/reply route |
+
+Follow the displayed next step and [DNS runbook](RUNBOOK.md#dns). Correct the
+identified hostname, DNS record/view or forwarding issue and rerun this cell.
+Review rule/view ordering if queries select the wrong source. The resolver result
+alone does not expose server response codes, TTLs or the chosen forwarding rule.
+A comparison from another machine in the customer VCN is optional when helpful.
+
+Numeric IP targets skip hostname resolution. If the explicit HOST resolves but
+JDBC still reports UnknownHostException, verify its TNS alias, selected descriptor
+and JVM lookup behavior with the original client. For executor-side failures,
+use section 5 to sample that path; notebook success alone does not cover it.
 """),
         cell("code", """if CONFIG_PATH:
     CONFIG = json.loads(Path(CONFIG_PATH).read_text())
 CONFIG = validate_config(CONFIG)  # Validate all destinations before probing.
 
 def show_summary(result, max_rows=40):
-    print_report(result, max_rows=max_rows, show_support_guidance=SHOW_SUPPORT_GUIDANCE)
+    print_report(result, max_rows=max_rows)
 
 dns_report = run_samples(CONFIG, label=RUNTIME_LABEL, dns_only=True,
                          sample_count=REPEAT_SAMPLES, interval_seconds=SAMPLE_INTERVAL_SECONDS)
@@ -280,27 +266,21 @@ if EXECUTOR_SAMPLE_PARTITIONS:
 else:
     print("Executor sample not requested; notebook results do not verify executors.")
 """),
-        cell("markdown", """## 6. Export evidence and interpret results
+        cell("markdown", """## 6. Retest the connection and save your results
 
-Start with the failed stage's [runbook section](RUNBOOK.md). Compare customer DNS
-and this runtime using the [decision table](RUNBOOK.md#comparison). Verify your
-endpoint/client settings, customer DNS, listener, source-specific network rules
-and routes with the customer network/database/workspace administrators. Correct
-the identified customer-owned setting and repeat the relevant checks.
+Use the first failed stage's [runbook section](RUNBOOK.md) to inspect your setup:
+DNS records/views/forwarding for a lookup failure; listener, route/rules and return
+path for a socket failure; existing client settings for a database connection
+failure. Correct the identified configuration and repeat the relevant checks.
 
-Retain before/after reports and rerun the original operation in the affected
-runtime. A socket or one database connection does not prove catalog, job or AI
-Compute recovery. If the failure remains unresolved, use the [fallback Support
-handoff](RUNBOOK.md#support). To display conditional guidance without new probes,
-set `SHOW_SUPPORT_GUIDANCE = True` and call `show_summary(report)` for the saved
-report. Service-internal access and mapping expectations are not required inputs.
+Keep before/after results separate and rerun the original notebook, JDBC query,
+catalog read or job. One socket or Oracle connection does not validate the whole
+operation. SCAN needs an actual client connection; one selected redirect does not
+cover every RAC instance/failover path. The raw probe does not test your wallet.
 
-SCAN redirects remain unverified until an Oracle client connection succeeds.
-One successful connection cannot validate every node or failover path. Raw
-probes do not prove wallet authentication, JDBC configuration, EBS functionality,
-or the correctness of VCN rules. Proxy-based application connections need an
-application-specific check. Handle exported endpoint/network details as
-operational evidence.
+This cell saves the observed results, runtime labels and coverage limits.
+Handle endpoint/network details as operational information. Keep passwords,
+tokens, wallet contents and credential-bearing descriptors out of the export.
 """),
         cell("code", """evidence = {
     "dns_resolution": dns_report,
@@ -319,7 +299,7 @@ else:
     notebook = dict(cells=cells, metadata={
         "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
         "language_info": {"name": "python", "version": "3.9"},
-        "aidp_diagnostics": {"source": "shared-utils/private-network-diagnostics/ai_compute_network_diagnostics.py", "version": "1.4"},
+        "aidp_diagnostics": {"source": "shared-utils/private-network-diagnostics/ai_compute_network_diagnostics.py", "version": "1.5"},
     }, nbformat=4, nbformat_minor=5)
     try:
         import nbformat

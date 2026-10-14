@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "1.4"
+VERSION = "1.5"
 DNS_CODE = r'''
 import json, socket, sys
 host, port = json.load(sys.stdin)
@@ -97,23 +97,23 @@ except Exception as error:
     print(json.dumps({"status": "FAIL", "code": code}))
 '''
 
-# next_step is a customer action; managed-service investigations are separate.
+# Keep next steps focused on the user's network setup and connection settings.
 HINTS = {
-    "DNS_NAME_NOT_FOUND": "The system resolver could not find an address for this name. Verify the actual descriptor HOST, then resolve it in the customer VCN's private DNS context and check its records/view/forwarding. This does not prove a DNS-server NXDOMAIN response.",
-    "DNS_TEMPORARY_FAILURE": "The system resolver reported a temporary failure. Retain repeated UTC samples and compare customer DNS and affected runtimes before choosing a remedy.",
+    "DNS_NAME_NOT_FOUND": "Confirm the connection's actual HOST and the workspace VCN/subnet. Check which private DNS view or forwarding rule should resolve this name, then its record and DNS server. This resolver result does not prove a DNS-server NXDOMAIN response.",
+    "DNS_TEMPORARY_FAILURE": "Repeat DNS samples in this runtime and retain their UTC times. Review the workspace VCN's DNS source and forwarding-server availability for the affected domain before choosing a correction.",
     "DNS_IP_LITERAL": "An IP literal bypasses hostname resolution. Use the original application FQDN to investigate a DNS failure; this target checks only the supplied address.",
     "DNS_SHORT_NAME": "Confirm the full endpoint hostname from the connection descriptor. A short name can depend on resolver search rules; a TNS alias must be resolved by the application's Oracle client.",
     "CONNECTIVITY_BLOCKED_BY_DNS": "Correct or verify the earlier DNS failure or confirmed expectation mismatch, then rerun. No TCP/TLS connection was attempted for this target.",
     "ORACLE_BLOCKED_BY_DNS": "Resolve the earlier DNS failure or confirmed expectation mismatch before enabling a database login for this target.",
     "ORACLE_BLOCKED_BY_TCP": "No tested address accepted TCP. Resolve the listener/connectivity failure before retrying database login.",
-    "DNS_ERROR": "Verify the actual endpoint FQDN, then compare its resolution in the customer VCN's private DNS context with this affected runtime. Check customer VCN/on-premises records, views and forwarding with your network administrator.",
-    "DNS_TIMEOUT": "Ask your network administrator to check customer-owned DNS forwarding and resolver reachability; compare customer VCN and affected-runtime lookups and retain the timed-out UTC attempt.",
+    "DNS_ERROR": "Confirm the endpoint FQDN and workspace VCN/subnet. Review that VCN resolver's private views and forwarding rules for this domain; for on-premises DNS, check the route and DNS traffic to the configured server.",
+    "DNS_TIMEOUT": "Check the DNS forwarding rule, its endpoint and the route to the DNS server, including DNS traffic and replies. Record the UTC attempt and rerun the DNS cell or script stage after correcting the identified configuration.",
     "DNS_NO_ADDRESSES": "Verify the endpoint FQDN and customer DNS records; an empty answer does not identify a service-side fault.",
     "DNS_EXPECTATION_MISMATCH": "Remove unverified expected_ips and collect an observation-only report. Use a runtime-visible expected set only when its source is confirmed; customer-side database IPs can differ.",
     "DNS_COUNT_MISMATCH": "Remove an unverified expected_dns_count. A workspace SCAN proxy can return one address; compare only with a confirmed runtime expectation.",
     "TCP_TIMEOUT": "Verify the endpoint and port. Ask your network administrator to review customer-owned destination rules, routes and return routing, including DRG/VPN/FastConnect for on-premises.",
     "TCP_REFUSED": "Confirm the configured listener port and protocol with the database/service owner; an active rejection alone does not identify the rejecting device.",
-    "TCP_NO_ROUTE": "Ask your network administrator to check customer-owned routes and the return path. Compare customer baseline and affected-runtime results for the same listener.",
+    "TCP_NO_ROUTE": "Check the route to the datasource from the selected workspace network and the return path, including peering or DRG/VPN/FastConnect where applicable. Retest the same listener in this runtime.",
     "TCP_ERROR": "Retain the errno and confirm endpoint/port and customer network checks; the socket error alone does not locate the fault.",
     "IPV6_SOURCE_UNAVAILABLE": "Confirm the endpoint's required IPv4/IPv6 path with your network administrator. Retain the coverage warning; an IPv4 pass does not verify IPv6.",
     "TLS_VERIFY_FAILED": "Verify the endpoint identity, trusted CA and runtime wallet configuration. Do not disable certificate verification or replace the hostname with an arbitrary IP.",
@@ -131,7 +131,7 @@ HINTS = {
     "ORA-28001": "For a customer-owned database, coordinate password renewal with its DBA and update the runtime's credential reference before one controlled login.",
     "ORA-17868": "Verify the connection descriptor's actual hostname and application alias setup. Compare the affected runtime's DNS result; a Python host probe does not validate JDBC alias resolution.",
     "ORA-12514": "Verify the selected database service from its connection information. For a customer-operated database, ask its DBA to review listener registration; for a managed database, review its documented connection settings and customer-visible status.",
-    "ORA-12523": "Ask the database owner to check service/instance readiness. Customer-operated listeners belong to the DBA; managed database listener state requires Oracle Support.",
+    "ORA-12523": "Verify the database is available and the selected service is ready; review listener registration with the DBA where accessible. Repeat one client connection after the identified readiness issue is corrected.",
     "DPY-6001": "Verify the selected service name and ask the database owner to check registration; socket reachability alone is insufficient.",
     "DPY-6005": "This is a generic Oracle connection error. Compare DNS/TCP/TLS stages and matching client settings before choosing a network, wallet or database remedy.",
     "ORA-12506": "Ask the database owner to verify the permitted source and customer-visible access controls; do not infer a missing network rule from this code.",
@@ -165,21 +165,6 @@ RUNBOOK_SECTIONS = {
     }.items()
     for code in codes
 }
-
-SUPPORT_HINTS = {
-    "dns": "If customer DNS/settings are verified, ask Oracle Support to inspect the affected Compute's effective attachment, service-managed DNS/CoreDNS and internal mapping propagation. Customers cannot inspect these controls.",
-    "dns-expectations": "Ask Oracle Support to confirm the runtime-visible mapping when it is unavailable to you; service-managed RCE/NAT mappings are not customer configuration.",
-    "tcp": "If customer destination/routing checks pass, ask Oracle Support to inspect service-managed NSGs, routing, private connectivity and RCE/proxy health for this runtime and UTC attempt.",
-    "tls": "Escalate if the compatible application/Oracle client still fails after customer trust, identity and wallet checks; ask Support to correlate the service path without disabling TLS verification.",
-    "scan": "If the configured SCAN and customer listener paths are valid but the real connection fails, ask Support to inspect service-managed SCAN proxy/redirect translation for the recorded attempt.",
-    "accounts": "For a service-managed database or account, Oracle Support must investigate credentials/account state; customers are not expected to access or unlock it.",
-    "oracle-service": "For managed database listener/readiness issues, contact the database service's Oracle Support team. For AIDP-only failures with the same valid service, request AIDP path correlation.",
-    "client": "If the documented runtime dependency/credential mechanism fails or is inaccessible, ask the workspace administrator or Oracle Support for the supported path; do not modify managed service images.",
-    "coverage": "If the required address family/path cannot be tested in the affected runtime, ask Support to confirm its supported networking and record the untested coverage.",
-    "runtime": "If supported runtime execution or executor access is unavailable, ask Support to inspect the runtime failure using the affected resource and UTC window.",
-    "unclassified": "For a service-managed dependency or unresolved AIDP-only failure, ask Oracle Support to correlate the underlying error and owner-side operation outcome before selecting a service-network remedy."
-}
-
 
 class ConfigurationError(ValueError):
     """A configuration error safe to show without exposing source values."""
@@ -297,8 +282,6 @@ def check(status, code, stage, endpoint, **details):
         result.setdefault("next_step", "Retain the failed stage/code and compare the actual application settings; the result alone does not identify a cause.")
     if section:
         result["runbook_ref"] = "RUNBOOK.md#" + section
-        if status in {"FAIL", "WARN"} or code == "ORACLE_RETRY_SUPPRESSED":
-            result["support_next_step"] = SUPPORT_HINTS[section]
     return result
 
 
@@ -507,7 +490,7 @@ def run_diagnostics(config, label="runtime", oracle_probe=False, oracle_suppress
                 test_scope="dns_only" if dns_only else "network_and_oracle" if oracle_probe else "network",
                 not_run_stages=["tcp", "tls", "oracle", "scan_redirect"] if dns_only else [],
                 limits=["Runtime-local observations; does not inspect OCI routes, NSGs, PE/RCE configuration, or database server state.",
-                        "Customers inspect their own permitted resources; service-managed CoreDNS, NSGs and internal RCE/proxy state require Oracle Support.",
+                        "DNS results observe this runtime's resolver; they do not audit the VCN's DNS views, forwarding rules or network setup.",
                         "Raw socket/TLS probes do not exercise Oracle Net or wallet authentication.",
                         "One Oracle login validates one chosen route and SELECT 1, not all RAC nodes, redirects, failover, or application queries.",
                         "Synthetic/reserved address classification alone does not prove an RCE mapping or private network path."],
@@ -544,7 +527,7 @@ def run_samples(config, label="runtime", oracle_probe=False, sample_count=1, int
     return report
 
 
-def print_report(report, max_rows=None, show_support_guidance=False):
+def print_report(report, max_rows=None):
     if max_rows is not None:
         _number(max_rows, 1, 1000, "max_rows", integer=True)
     print("AIDP diagnostics: " + report["status"] + " | Scope: " + report.get("test_scope", "runtime") + " | " + report["runtime"]["label"])
@@ -560,9 +543,7 @@ def print_report(report, max_rows=None, show_support_guidance=False):
         if row.get("addresses"):
             print("     Addresses: " + ", ".join(family + " " + ip for family, ip in row["addresses"]))
         if row.get("next_step"):
-            print("     Customer: " + row["next_step"])
-        if show_support_guidance and row.get("support_next_step"):
-            print("     Oracle Support: " + row["support_next_step"])
+            print("     Next: " + row["next_step"])
         if row.get("runbook_ref"):
             print("     Runbook: " + row["runbook_ref"])
     if not report["checks"]:
@@ -578,14 +559,13 @@ def main(argv=None):
     parser.add_argument("--label", default="AI Compute runtime", help="Network vantage point label")
     parser.add_argument("--oracle-probe", action="store_true", help="Enable one login and SELECT 1 per configured endpoint per sample")
     parser.add_argument("--dns-only", action="store_true", help="Resolve names and compare confirmed expectations without TCP/TLS or database login")
-    parser.add_argument("--show-support-guidance", action="store_true", help="Also display conditional Support steps; JSON retains them regardless")
     parser.add_argument("--samples", type=int, default=1, help="Collect 1-10 samples; default 1")
     parser.add_argument("--interval", type=float, default=5, help="Pause 0-60 seconds between completed samples")
     args = parser.parse_args(argv)
     try:
         report = run_samples(json.loads(Path(args.config).read_text()), args.label, args.oracle_probe,
                              args.samples, args.interval, dns_only=args.dns_only)
-        print_report(report, show_support_guidance=args.show_support_guidance)
+        print_report(report)
         if args.output:
             Path(args.output).write_text(json.dumps(report, indent=2) + "\n")
     except ConfigurationError as error:
