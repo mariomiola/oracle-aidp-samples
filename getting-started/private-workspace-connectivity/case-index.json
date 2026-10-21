@@ -1,0 +1,58 @@
+[
+  {
+    "case": "V01",
+    "title": "Amazon S3 through customer egress",
+    "notebook": "V01_Amazon_S3.ipynb",
+    "objective": "Read a small private S3 object from an AIDP workspace through your approved outbound network path.",
+    "kind": "csv"
+  },
+  {
+    "case": "V02",
+    "title": "Customer Network Source and service gateway",
+    "notebook": "V02_Customer_Network_Source.ipynb",
+    "objective": "Access an in-region OCI service without broadening its customer source-network restriction.",
+    "kind": "csv"
+  },
+  {
+    "case": "V03",
+    "title": "Cross-region OCI Object Storage",
+    "notebook": "V03_Cross_Region_Object_Storage.ipynb",
+    "objective": "Read a dataset in one OCI region while your AIDP workspace runs in another.",
+    "kind": "csv"
+  },
+  {
+    "case": "V04",
+    "title": "OCI service private endpoint",
+    "notebook": "V04_Service_Private_Endpoint.ipynb",
+    "objective": "Connect to an existing database through its actual service-private endpoint.",
+    "kind": "adb"
+  },
+  {
+    "case": "V05",
+    "title": "OCI service hostname coverage",
+    "notebook": "V05_Service_Hostname_Coverage.ipynb",
+    "objective": "Record which of your selected OCI service endpoints can be configured and accessed through the workspace.",
+    "kind": null
+  },
+  {
+    "case": "V06",
+    "title": "DNS edits and input validation",
+    "notebook": "V06_DNS_CRUD_And_Validation.ipynb",
+    "objective": "Validate scoped add/edit/delete/cancel behavior and record input-validation outcomes.",
+    "kind": null
+  },
+  {
+    "case": "V07",
+    "title": "DNS changes without a Spark restart",
+    "notebook": "V07_DNS_Without_Restart.ipynb",
+    "objective": "Measure workload continuity for a DNS edit that your deployment explicitly supports while compute is running.",
+    "kind": "csv"
+  },
+  {
+    "case": "V08",
+    "title": "Preserve an existing database connection",
+    "notebook": "V08_Existing_Connection_Preservation.ipynb",
+    "objective": "Check that unrelated workspace DNS edits preserve an already-working database connection.",
+    "kind": "adb"
+  }
+]

@@ -1,0 +1,146 @@
+"""Offline acceptance regressions; no network, cloud or Spark runtime required."""
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import connectivity_checks as h
+
+
+class FakeRow(dict):
+    def asDict(self):
+        return dict(self)
+
+
+class Reader:
+    def __init__(self, rows):
+        self.rows = rows
+    def option(self, *args):
+        return self
+    def csv(self, *args):
+        return self
+    def limit(self, n):
+        self.rows = self.rows[:n]
+        return self
+    def collect(self):
+        return self.rows
+
+
+class AcceptanceRegressions(unittest.TestCase):
+    def test_plan_cannot_pass(self):
+        for case in h.CASE_NAMES:
+            result = h.run_case(case, {})
+            self.assertEqual(h.summarize(result), 'INCOMPLETE')
+
+    def test_missing_spark_blocks_live(self):
+        self.assertEqual(h.summarize(h.run_case('V01', {}, live=True)), 'BLOCKED')
+
+    def test_signed_fixture_is_rejected(self):
+        with self.assertRaises(h.Prerequisite):
+            h.fixture_read(None, {'uri': 's3a://b/f?token=secret',
+                                 'endpoint': 's3.us-east-1.amazonaws.com',
+                                 'expected_rows': [{'id': '1'}]})
+
+    def test_embedded_endpoint_credentials_are_rejected(self):
+        with self.assertRaises(h.Prerequisite):
+            h.fixture_read(None, {'uri': 's3a://fixture.example/sample.csv',
+                                 'endpoint': 'https://user:secret@service.example',
+                                 'region': 'test-region', 'fixture_size_bytes': 32,
+                                 'expected_rows': [{'id': '1'}]})
+
+    def test_unverified_fixture_size_is_blocked(self):
+        with self.assertRaises(h.Prerequisite):
+            h.fixture_read(None, {'uri': 'oci://fixture@namespace/sample.csv',
+                                 'endpoint': 'https://service.example',
+                                 'fixture_size_bytes': 0,
+                                 'expected_rows': [{'id': '1'}]})
+
+    def test_extra_and_duplicate_fixture_rows_fail(self):
+        cfg = {'uri': 'oci://b@n/f.csv', 'endpoint': 'https://objectstorage.us-phoenix-1.oraclecloud.com',
+               'fixture_size_bytes': 32, 'expected_rows': [{'id': '1'}, {'id': '2'}]}
+        for actual in ([{'id': '1'}, {'id': '1'}],
+                       [{'id': '1'}, {'id': '2'}, {'id': '3'}]):
+            with self.assertRaises(AssertionError):
+                h.fixture_read(SimpleNamespace(read=Reader([FakeRow(r) for r in actual])), cfg)
+
+    def test_row_order_is_not_significant(self):
+        cfg = {'uri': 'oci://b@n/f.csv', 'endpoint': 'https://objectstorage.us-phoenix-1.oraclecloud.com',
+               'fixture_size_bytes': 32, 'expected_rows': [{'id': '1'}, {'id': '2'}]}
+        output = h.fixture_read(SimpleNamespace(read=Reader([FakeRow(id='2'), FakeRow(id='1')])), cfg)
+        self.assertEqual(output['rows'], 2)
+
+    def test_zone_suffix_boundary(self):
+        zone = 'adb.us-ashburn-1.oraclecloud.com'
+        self.assertTrue(h.zone_match('x.' + zone, zone))
+        self.assertFalse(h.zone_match('evil' + zone, zone))
+        self.assertFalse(h.zone_match(zone + '.attacker.example', zone))
+
+    def test_missing_evidence_does_not_pass(self):
+        for case in h.CASE_NAMES:
+            self.assertEqual(h.summarize(h.evaluate_evidence(case, {})), 'BLOCKED')
+
+    def continuity(self):
+        baseline = {'dns_zones': ['legacy.example'], 'scan': []}
+        snapshots = [baseline, {'dns_zones': ['legacy.example', 'a.example'], 'scan': []},
+                     {'dns_zones': ['legacy.example', 'b.example'], 'scan': []}, baseline, baseline]
+        return {'evidence_ref': 'observations.json', 'before': baseline, 'restored': baseline,
+                'restart_count': 0, 'lifecycle_evidence_ref': 'lifecycle.json',
+                'phases': [{'phase': name, 'application_id': 'app1', 'functional': 'PASS',
+                            'operation_evidence_ref': name + '.json', 'configuration_snapshot': snap,
+                            'dns_addresses': ['192.0.2.1'], 'expected_dns_addresses': ['192.0.2.1'],
+                            'mapping_evidence_ref': 'mapping.json'}
+                           for name, snap in zip(['before', 'after_add', 'after_edit', 'after_delete', 'restored'], snapshots)]}
+
+    def test_continuity_valid_record_requires_review(self):
+        r = h.evaluate_evidence('V07', self.continuity())
+        self.assertTrue(all(v['status'] == 'PASS' for v in r['checks'].values()))
+        self.assertEqual(h.summarize(r), 'REVIEW_REQUIRED')
+
+    def test_replaced_application_and_restart_fail(self):
+        e = self.continuity()
+        e['phases'][2]['application_id'] = 'app2'
+        e['restart_count'] = 1
+        r = h.evaluate_evidence('V07', e)
+        self.assertEqual(r['checks']['same_spark_application']['status'], 'FAIL')
+        self.assertEqual(r['checks']['no_restart_events']['status'], 'FAIL')
+
+    def test_unchanged_config_is_not_a_change_test(self):
+        e = self.continuity()
+        for phase in e['phases']:
+            phase['configuration_snapshot'] = e['before']
+        r = h.evaluate_evidence('V07', e)
+        self.assertEqual(r['checks']['configuration_change_exercised']['status'], 'FAIL')
+
+    def test_dns_mismatch_fails_continuity(self):
+        e = self.continuity()
+        e['phases'][1]['dns_addresses'] = ['192.0.2.2']
+        r = h.evaluate_evidence('V07', e)
+        self.assertEqual(r['checks']['dns_each_phase']['status'], 'FAIL')
+
+    def test_partial_operation_requires_readback(self):
+        e = {'evidence_ref': 'capture.json', 'before': {}, 'restored': {},
+             'steps': [{'name': 'partial', 'performed': True, 'work_request_status': 'FAILED',
+                        'work_request_ref': 'wr', 'saved_hostnames': ['owned.example'],
+                        'readback_evidence_ref': 'readback.json'}]}
+        self.assertEqual(h.evaluate_evidence('V06', e)['checks']['partial_readback_recorded']['status'], 'PASS')
+        e['steps'][0]['readback_evidence_ref'] = None
+        self.assertEqual(h.evaluate_evidence('V06', e)['checks']['partial_readback_recorded']['status'], 'FAIL')
+
+    def test_driver_secret_not_written_to_results(self):
+        class BadSpark:
+            def sql(self, query):
+                raise RuntimeError('password=DO_NOT_PERSIST_ME')
+        r = h.run_case('V01', {'workspace_label': 'test-workspace', 'compute_label': 'test-compute'},
+                       spark=BadSpark(), live=True)
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'result.json'
+            h.write_results(p, [r])
+            self.assertNotIn('DO_NOT_PERSIST_ME', p.read_text())
+            self.assertEqual(json.loads(p.read_text())['results'][0]['checks']['spark_control']['error_type'], 'RuntimeError')
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,0 +1,227 @@
+# Copyright (c) 2026 Oracle and/or its affiliates.
+# Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl/.
+"""Build eight independent customer notebooks with embedded network diagrams.
+
+Uses only the Python standard library. Generate PNGs with build_diagrams.py
+first if a diagram changes. No cloud calls or customer configuration required.
+"""
+import ast
+import base64
+import copy
+import json
+import pprint
+from pathlib import Path
+
+ROOT = Path(__file__).parent
+DOCS = {
+    'workspaces': 'https://docs.oracle.com/en/cloud/paas/ai-data-platform/aidug/workspaces.html',
+    'sgw': 'https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/servicegateway.htm',
+    'nat': 'https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/NATgateway.htm',
+    'sources': 'https://docs.oracle.com/en-us/iaas/Content/Identity/Tasks/managingnetworksources.htm',
+    'adb': 'https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/connect-introduction.html',
+    'hdfs': 'https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/hdfsconnector.htm',
+}
+CASES = {
+ 'V01': {
+  'title': 'Amazon S3 through customer egress', 'file': 'V01_Amazon_S3.ipynb', 'kind': 'csv',
+  'purpose': 'Read a small private S3 object from an AIDP workspace through your approved outbound network path.',
+  'setup': [
+   ('Workspace', 'Enable private network access and select the customer VCN, subnet and applicable NSGs. Confirm the service-required IAM and network prerequisites in the AIDP workspace documentation.'),
+   ('Route', 'For the illustrated IPv4 NAT design, the customer subnet has a default route to an existing NAT gateway. Use your approved equivalent egress path if different. This example uses the S3 public regional endpoint, not a private OCI-to-AWS interconnect.'),
+   ('DNS', 'Copy the actual regional and bucket-specific hostnames used by your S3 client. Add the required exact destinations in advanced DNS when appropriate. Include redirect destinations observed by the client; do not use a broad domain wildcard.'),
+   ('Security', 'Permit outbound HTTPS to the chosen S3 endpoint through subnet rules, NSGs and any firewall; allow return traffic for the connection. No unsolicited inbound internet rule or AWS VPC is required for this example.'),
+   ('Service and fixture', 'Use an existing private bucket with a known CSV object no larger than 64 KiB. Configure a supported S3A credential provider and runtime-matched Hadoop/AWS libraries before the comparison; do not embed access keys or change libraries during the test.')],
+  'steps': ['Record baseline saved DNS/SCAN settings and the actual S3 client endpoint.', 'Run the baseline fixture read with the same runtime identity you will use afterward.', 'If the destination needs advanced DNS, add only its exact FQDN through Workbench; capture the operation result and reopened saved configuration.', 'Rerun the same reader and compare exact rows. Restore only the entries added for this test.'],
+  'acceptance': 'The authenticated S3 read returns the expected rows. Configuration, DNS and optional TCP results are separate. Review route evidence before claiming a specific outbound path.',
+  'refs': ['workspaces', 'nat']},
+ 'V02': {
+  'title': 'Customer Network Source and service gateway', 'file': 'V02_Customer_Network_Source.ipynb', 'kind': 'csv',
+  'purpose': 'Access an in-region OCI service without broadening its customer source-network restriction.',
+  'setup': [
+   ('Workspace', 'Attach the private-network-enabled workspace to the VCN/subnet intended by the source restriction.'),
+   ('Route', 'Use an existing service gateway in that VCN and enable the supported regional service. Add/verify the regional service-CIDR route in the customer subnet route table and the applicable security rules. A more specific service route must take precedence over unrelated default egress.'),
+   ('DNS', 'Use the exact service endpoint your client calls. Configure advanced DNS for the destination when customer-VCN source context is required; verify the saved result and runtime resolution.'),
+   ('Security and identity', 'Use an identity already authorized by an unchanged IAM policy referencing your Network Source. Confirm the selected VCN and subnet ranges are in that source. Database network ACLs and OCI IAM Network Sources are different controls.'),
+   ('Evidence', 'Arrange access to policy/route records and correlated target request or network telemetry before testing. A successful read, translated destination IP, or public egress-IP check does not independently establish the service-gateway path.')],
+  'steps': ['Capture the existing restriction, intended source network, route and identity label.', 'Read the known small in-region Object Storage CSV before and after the scoped FQDN change, keeping identity and client unchanged.', 'Correlate the operation with source/network evidence while the restriction remains unchanged.', 'Restore the saved DNS baseline and repeat the original control.'],
+  'acceptance': 'The fixture read passes under the unchanged restriction AND reviewed independent evidence establishes the intended customer source/path. Keep an ADB ACL variant separately labeled.',
+  'refs': ['workspaces', 'sgw', 'sources']},
+ 'V03': {
+  'title': 'Cross-region OCI Object Storage', 'file': 'V03_Cross_Region_Object_Storage.ipynb', 'kind': 'csv',
+  'purpose': 'Read a dataset in one OCI region while your AIDP workspace runs in another.',
+  'setup': [
+   ('Workspace and regions', 'Record your workspace region A and the fixture region B. Choose different regions; the notebook does not prescribe a tenancy or a specific region pair.'),
+   ('Route', 'For this public-endpoint example, use an existing customer NAT/approved egress path from region A to the region B endpoint. A region A service gateway only serves supported services in region A; it is not the region B route. A private peering design would need its own verified topology.'),
+   ('DNS and client', 'Copy the actual region B Object Storage endpoint and configure its exact FQDN if required. Set the bucket-specific HDFS endpoint property, not an unrelated global endpoint. Confirm the effective endpoint with a fresh filesystem client/session when cached clients could retain earlier values.'),
+   ('Security', 'Permit the destination HTTPS path through customer security rules/firewalls. Keep bucket IAM and source restrictions appropriate to the selected identity and route.'),
+   ('Fixtures', 'Use an existing region B CSV object no larger than 64 KiB with known rows, and a separate region A control object. Supply each object\'s own namespace, endpoint and expected values.')],
+  'steps': ['Fill both regions and the region B fixture; record effective endpoint and baseline configuration.', 'Run the remote read before and after a scoped destination FQDN change.', 'Record a separate region A control read using its own fixture settings.', 'Review effective endpoint/path evidence, then restore only this run\'s FQDN entries.'],
+  'acceptance': 'The region B fixture matches the expected rows and the region A control still passes. Configuring a region B endpoint does not by itself prove the client used it.',
+  'refs': ['workspaces', 'sgw', 'nat', 'hdfs']},
+ 'V04': {
+  'title': 'OCI service private endpoint', 'file': 'V04_Service_Private_Endpoint.ipynb', 'kind': 'adb',
+  'purpose': 'Connect to an existing database through its actual service-private endpoint.',
+  'setup': [
+   ('Destination', 'Select an existing Autonomous Database private endpoint. Copy its private connection descriptor, hostname, listener port and service name from Database Connection. A regional public hostname protected by an ACL is a different case.'),
+   ('Workspace and routing', 'Attach the workspace to the required customer private network. Verify the destination subnet route and return path. For a different VCN, arrange supported local/remote peering or DRG connectivity with non-overlapping ranges and the appropriate route tables.'),
+   ('DNS', 'Verify the private hostname resolves to the intended target in your customer network and that workspace FQDN provisioning/runtime DNS reach it correctly. Configure customer resolver/forwarding rules if your topology needs them. Stop on a private/split-DNS mismatch; do not substitute a public descriptor to pass the case.'),
+   ('Security', 'Allow the actual listener port through the relevant subnet/NSG/firewall rules and target access configuration, including any service-required workspace rules. NAT/internet routing is not needed for the illustrated private destination path.'),
+   ('Authentication', 'Prefer an existing workspace external catalog connection, or provide an existing supported wallet ZIP/TNS plus a private runtime secret. Preserve certificate/server identity checks. A wallet-configured query or port 1522 alone does not prove client-certificate presentation.')],
+  'steps': ['Capture the verified private descriptor, network path and expected database identity.', 'Record baseline configuration, then add only the actual private FQDN when supported.', 'Run the read-only identity query with existing authentication and compare the expected instance.', 'Review private-target and any mTLS evidence separately; restore only test entries.'],
+  'acceptance': 'The read reaches the intended private database. Record endpoint-type evidence independently; if claiming mTLS, corroborate actual client-certificate use and effective connection settings.',
+  'refs': ['workspaces', 'adb']},
+ 'V05': {
+  'title': 'OCI service hostname coverage', 'file': 'V05_Service_Hostname_Coverage.ipynb', 'kind': None,
+  'purpose': 'Record which of your selected OCI service endpoints can be configured and accessed through the workspace.',
+  'setup': [
+   ('Inventory', 'Select actual resources you own. Possible coverage includes Autonomous Database, Streaming, OpenSearch, PostgreSQL, Data Flow interactive endpoints and Kafka endpoints. This is a test inventory, not a guarantee of automatic DNS insertion or a service-wide exception policy.'),
+   ('Route per service', 'Use each resource\'s real connection descriptor. Verify whether it needs an in-region service gateway, customer egress or a private route. Do not assume all selected services share a gateway or listener port.'),
+   ('DNS', 'Use actual resource FQDNs rather than probing only a service-zone root. Record saved workspace configuration and runtime results for each resource.'),
+   ('Security and service operation', 'Verify each service\'s firewall/NSG and authorization prerequisites and use a small supported read/query operation. Record unavailable fixtures as blocked coverage, not success.'),
+   ('Change control', 'Use owned test endpoints and restore only entries introduced for this coverage run. Record any additional support/configuration action required rather than assuming none.')],
+  'steps': ['Fill required_services and one actual endpoint record for each selected service.', 'Capture accepted/rejected FQDN operations and reopened saved configuration per host.', 'Perform each service\'s existing authenticated operation and reference its evidence.', 'Evaluate the recorded coverage, review endpoint scope, and restore the baseline.'],
+  'acceptance': 'Each selected endpoint has configuration and authenticated-operation evidence. Do not generalize an endpoint result to an entire DNS zone or all service instances.',
+  'refs': ['workspaces', 'sgw']},
+ 'V06': {
+  'title': 'DNS edits and input validation', 'file': 'V06_DNS_CRUD_And_Validation.ipynb', 'kind': None,
+  'purpose': 'Validate scoped add/edit/delete/cancel behavior and record input-validation outcomes.',
+  'setup': [
+   ('Owned endpoints', 'Prepare two owned, resolvable disposable hostnames A/B and an approved existing route to their small fixtures. For an optional partial-provisioning observation, use an owned deliberately unresolved name U.'),
+   ('Route and security', 'Verify A/B are reachable through the workspace\'s existing customer path and permitted ports. DNS edits do not create routes, gateways or authorization. Keep those controls fixed during the comparison.'),
+   ('Workspace editing', 'Capture the complete DNS list and SCAN settings first. Follow the deployment\'s edit prerequisites; current public documentation says most network changes require stopped compute. Do not stop another user\'s resource to perform this sample.'),
+   ('Input behavior', 'Use the FQDN field\'s published format and current UI validation. Record duplicate/normalization and partially failed-request behavior from actual readback rather than assuming atomic rollback or a universal normalization rule.')],
+  'steps': ['Capture the full original configuration and approved A/B test hostnames.', 'Add A; replace only A with B; remove B; try an unsaved edit and cancel. Reopen after each step.', 'Test invalid FQDN forms in the matrix below without saving changes to unrelated settings. Record normalization/duplicate behavior separately.', 'Optionally submit A with unresolved U, inspect operation/readback, and restore the complete baseline regardless of retained entries.'],
+  'acceptance': 'Saved snapshots match the expected scoped edits, invalid FQDN forms do not persist, cancel preserves baseline, and final state is restored. Record partial/normalization observations separately.',
+  'refs': ['workspaces']},
+ 'V07': {
+  'title': 'DNS changes without a Spark restart', 'file': 'V07_DNS_Without_Restart.ipynb', 'kind': 'csv',
+  'purpose': 'Measure workload continuity for a DNS edit that your deployment explicitly supports while compute is running.',
+  'setup': [
+   ('Deployment capability', 'Confirm this particular DNS operation is supported without stopping compute in your deployment. Public documentation says most network changes require stopped clusters. If the UI requires a stop or the operation is unsupported, mark this case BLOCKED; do not bypass that requirement.'),
+   ('Network baseline', 'Use owned A/B endpoints and an existing working customer route, security rules and authenticated fixture. Keep gateways, listener ports, identity and service policy unchanged across phases.'),
+   ('DNS evidence', 'Capture authoritative workspace mapping/readback for each phase. Record convergence time as observed; no universal propagation deadline is assumed. Do not copy a translated address from another workspace.'),
+   ('Runtime evidence', 'Use the same dedicated Spark session. Record application ID, SELECT 1, workload result and independent compute lifecycle evidence before/add/edit/delete/restored. A stable display name alone is insufficient.')],
+  'steps': ['First verify the capability prerequisite and capture the before phase.', 'For each permitted add/edit/delete operation, keep the same session and record the reader, DNS mapping and application identity.', 'Capture lifecycle events across the entire run, including any stop/start/replacement.', 'Restore the original configuration. If a prerequisite adoption restart is needed, handle it outside this measured run and start a separate test afterward.'],
+  'acceptance': 'Actual DNS changes converge, every workload phase passes, the Spark application is unchanged and lifecycle evidence shows no restart. Otherwise record the observed failure or prerequisite.',
+  'refs': ['workspaces']},
+ 'V08': {
+  'title': 'Preserve an existing database connection', 'file': 'V08_Existing_Connection_Preservation.ipynb', 'kind': 'adb',
+  'purpose': 'Check that unrelated workspace DNS edits preserve an already-working database connection.',
+  'setup': [
+   ('Original connection', 'Choose your existing workspace and record the original ADB hostname, descriptor, route, access policy, authentication and expected identity. The notebook does not prescribe a workspace or database name.'),
+   ('Network baseline', 'Keep the original private, in-region service-gateway or approved public-egress path intact. Verify target listener security and return traffic under the original policy. A private endpoint and public endpoint with ACL are separately documented topologies.'),
+   ('Test hostnames', 'Choose unrelated owned A/B hostnames with an approved existing route. Capture complete original DNS/SCAN configuration and do not replace the original database mapping with a copied address.'),
+   ('Workspace editing and auth', 'Follow supported edit prerequisites and preserve the existing wallet/catalog/secret mechanism. Never weaken mTLS or source restrictions to get a successful regression result.')],
+  'steps': ['Run the original read-only identity query and capture the original configuration.', 'Add unrelated A, replace with B, delete B and restore. Repeat the original query and save configuration evidence for each phase.', 'Compare every result with the expected original instance and review the preserved route/auth settings.', 'Leave existing resource lifecycle and baseline settings as they were before the test.'],
+  'acceptance': 'The original query returns the expected identity throughout actual unrelated configuration changes and final DNS/SCAN matches the baseline. A successful before result alone is insufficient.',
+  'refs': ['workspaces', 'adb']},
+}
+
+UNKNOWN = object()
+def static(node, case):
+    if isinstance(node, ast.Name) and node.id == 'case': return case
+    try: return ast.literal_eval(node)
+    except (ValueError, TypeError): pass
+    if isinstance(node, ast.Compare) and len(node.ops) == 1:
+        a, b = static(node.left, case), static(node.comparators[0], case)
+        if a is UNKNOWN or b is UNKNOWN: return UNKNOWN
+        op = node.ops[0]
+        if isinstance(op, ast.Eq): return a == b
+        if isinstance(op, ast.NotEq): return a != b
+        if isinstance(op, ast.In): return a in b
+        if isinstance(op, ast.NotIn): return a not in b
+    if isinstance(node, ast.BoolOp):
+        values = [static(v, case) for v in node.values]
+        if isinstance(node.op, ast.And) and any(v is False for v in values): return False
+        if isinstance(node.op, ast.Or) and any(v is True for v in values): return True
+        if all(v is not UNKNOWN for v in values):
+            return all(values) if isinstance(node.op, ast.And) else any(values)
+    return UNKNOWN
+
+class Specialize(ast.NodeTransformer):
+    def __init__(self, case): self.case = case
+    def visit_If(self, node):
+        node = self.generic_visit(node)
+        value = static(node.test, self.case)
+        return node.body if value is True else node.orelse if value is False else node
+
+def engine(case, title):
+    source = ast.parse((ROOT / 'connectivity_checks.py').read_text())
+    nodes = []
+    for item in source.body:
+        if isinstance(item, (ast.Import, ast.ImportFrom, ast.ClassDef)):
+            nodes.append(copy.deepcopy(item))
+        elif isinstance(item, ast.FunctionDef) and item.name != 'main':
+            if item.name in ('run_case', 'fixture_read', 'adb_read') and case in ('V05', 'V06'): continue
+            if item.name == 'evaluate_evidence' and case in ('V01', 'V02', 'V03', 'V04'): continue
+            nodes.append(Specialize(case).visit(copy.deepcopy(item)))
+    module = ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[]))
+    return 'CASE_NAMES = ' + repr({case: title}) + '\n\n' + ast.unparse(module) + '\n'
+
+def configuration(kind):
+    cfg = {'workspace_label': '', 'compute_label': '', 'hostname': '', 'probe_tcp': False, 'port': 443}
+    if kind == 'csv':
+        cfg.update(kind='csv', uri='', endpoint='', region='', workspace_region='', fixture_size_bytes=0,
+                   expected_rows=[{'id': '1', 'label': 'alpha'}, {'id': '2', 'label': 'beta'}])
+    elif kind == 'adb':
+        cfg.update(kind='adb', port=1522, catalog_id='', wallet_zip='', tns='', user='', expected_instance='')
+    return cfg
+
+def evidence(case):
+    ev = {'evidence_ref': None}
+    if case == 'V05':
+        ev.update(required_services=[], services=[])
+    if case == 'V06':
+        ev.update(before=None, restored=None, steps=[{'name': name, 'actual_snapshot': None, 'expected_snapshot': None, 'work_request_ref': None, 'ui_evidence_ref': None} for name in ('add', 'edit', 'delete', 'cancel')])
+        ev['steps'] += [{'name': name, 'rejected': None, 'actual_snapshot': None, 'ui_evidence_ref': None} for name in ('blank', 'underscore', 'path', 'query', 'fragment', 'malformed')]
+        ev['steps'] += [{'name': 'partial', 'performed': False, 'work_request_ref': None, 'work_request_status': None, 'saved_hostnames': [], 'readback_evidence_ref': None}]
+        ev['normalization_observations'] = []
+    if case in ('V07', 'V08'):
+        ev.update(before=None, restored=None, phases=[{'phase': phase, 'functional': None, 'operation_evidence_ref': None, 'application_id': None, 'configuration_snapshot': None, 'instance': None, 'dns_addresses': [], 'expected_dns_addresses': [], 'mapping_evidence_ref': None} for phase in ('before', 'after_add', 'after_edit', 'after_delete', 'restored')])
+    if case == 'V07': ev.update(restart_count=None, lifecycle_evidence_ref=None)
+    if case == 'V08': ev['expected_instance'] = ''
+    return ev
+
+def md(text, attachments=None):
+    cell = {'cell_type': 'markdown', 'metadata': {}, 'source': text.splitlines(True)}
+    if attachments: cell['attachments'] = attachments
+    return cell
+
+def code(text, hidden=False):
+    return {'cell_type': 'code', 'execution_count': None, 'outputs': [], 'metadata': {'jupyter': {'source_hidden': True}} if hidden else {}, 'source': text.splitlines(True)}
+
+def build():
+    index = []
+    for case, item in CASES.items():
+        network = '\n'.join(f'| {topic} | {detail} |' for topic, detail in item['setup'])
+        image = base64.b64encode((ROOT / 'assets' / (case.lower() + '-network.png')).read_bytes()).decode()
+        cells = [md(f'# {case}: {item["title"]}\n\n{item["purpose"]}\n\n[Choose another use case](README.md). This notebook is an unexecuted sample, not a live validation report.\n'),
+                 md('## Network setup\n\nComplete and verify these prerequisites with your network/service administrator before the workload comparison. The notebook does not create routes, change policies, configure DNS, or start compute.\n\n| Area | Required setup and verification |\n| --- | --- |\n' + network + '\n'),
+                 md('### Example network topology\n\n![Conceptual network path for ' + case + '](attachment:network.png)\n\nThe diagram is illustrative; it does not prove the route taken by a request.\n', {'network.png': {'image/png': image}}),
+                 md('## Test procedure\n\n' + '\n'.join(f'{i+1}. {step}' for i, step in enumerate(item['steps'])) + '\n\n**Acceptance:** ' + item['acceptance'] + '\n'),
+                 md('## Test helpers\n\nRun once to define this case\'s checks. Definitions make no network calls. AIDP uses Spark for the data-operation cells; no separate helper file is required.\n'), code(engine(case, item['title']), True),
+                 md('## Your configuration\n\nFill the empty values from your own environment. Labels identify your evidence; they do not attach this notebook to a workspace or compute. The example CSV rows match fixtures/sample.csv. For a different small fixture, supply its known size and exact rows. Copy the database port from its actual descriptor; 1522 below is only a starting value.\n\nUse an existing catalog connection for ADB when available. Otherwise provide an existing supported wallet ZIP/TNS and a private runtime password; a wallet directory is not a ZIP file. Do not put passwords or access keys in CONFIG.\n'),
+                 code('CASE_ID = ' + repr(case) + '\nCONFIG = ' + pprint.pformat(configuration(item['kind']), sort_dicts=False) + '\nRUN_LIVE = False\nRUN_EVIDENCE_CHECKS = False\nPHASE = "baseline"\nRESULTS = []\n')]
+        if item['kind']:
+            cells += [md('## Run a workload phase\n\nUse the same identity and client before and after a supported change. Only set RUN_LIVE=True when prerequisites are ready. For subsequent phases, change PHASE and rerun this cell without reinitializing RESULTS. The runtime password hook reads an already-provisioned environment variable; it never prints its value. The sample does not configure the S3A credential provider or install connector libraries.\n'),
+                      code('import os\nRUNTIME = {}\nif os.environ.get("ADB_PASSWORD"):\n    RUNTIME["adb_password"] = os.environ["ADB_PASSWORD"]\nresult = run_case(CASE_ID, CONFIG, spark=globals().get("spark"), runtime=RUNTIME, live=RUN_LIVE, phase=PHASE)\nresult["acceptance"] = summarize(result)\nRESULTS.append(result)\nprint(json.dumps(result, indent=2))\n')]
+        if case == 'V06':
+            cells += [md('### Input/CRUD observations\n\nUse your owned A/B hostnames. For add/edit/delete, record actual and expected complete snapshots including DNS list, SCAN settings and workspace label. For cancel, record UI evidence and unchanged baseline.\n\n| Input | Expected check |\n| --- | --- |\n| Blank entry | Rejected with baseline unchanged |\n| Underscore in a hostname label | Rejected with baseline unchanged |\n| URL containing a path, query or fragment | Rejected as a non-FQDN input; baseline unchanged |\n| Malformed name containing an empty middle label | Rejected with baseline unchanged |\n| Duplicate, case, trailing dot or host-only URL | Record actual UI normalization/rejection; do not assume a universal outcome |\n| Optional valid and unresolved names together | Record operation result and actual retained entries; do not assume atomic rollback |\n')]
+        if case == 'V05':
+            cells += [md('### Service observation format\n\nSelect your own required_services labels. Add one service record per selected resource using this shape. A missing fixture is blocked coverage. Accepted DNS configuration is not an authenticated read.\n'),
+                      code('SERVICE_RECORD_EXAMPLE = {"service": "", "hostname": "", "configuration_accepted": None, "saved_config_ref": None, "functional": None, "operation_evidence_ref": None, "additional_configuration_notes": ""}\n')]
+        cells += [md('## Evidence and review\n\nKeep each earlier phase and its UTC timestamp. Reference saved configuration, work requests, mappings and independent source/lifecycle records. Evidence snapshots contain the complete dns_zones, scan and workspace_label fields. Do not share credentials, signed URLs, wallet contents or customer identifiers in repository issues. Raw connector exception messages are omitted because they can contain secrets.\n\nDNS, TCP, authenticated access, private endpoint type, source path, mTLS and application continuity are separate results. A successful wallet-configured query does not independently establish client-certificate presentation. Review the applicable external evidence before accepting the complete case.\n'), code('EVIDENCE = ' + pprint.pformat(evidence(case), sort_dicts=False) + '\n')]
+        if case in ('V05', 'V06', 'V07', 'V08'):
+            cells += [code('if RUN_EVIDENCE_CHECKS:\n    observed = evaluate_evidence(CASE_ID, EVIDENCE)\n    observed["acceptance"] = summarize(observed)\n    RESULTS.append(observed)\n    print(json.dumps(observed, indent=2))\nelse:\n    print("Evidence assertions NOT_RUN; capture real observations first.")\n')]
+        cells += [md('## Restore and export\n\nRestore only settings introduced by this run, reopen the saved baseline and repeat the original control operation. Preserve original routes, security policies, wallet/authentication and unrelated DNS/SCAN entries. Manage resource lifecycle according to your own test plan; do not stop compute that was already in use.\n\nExport the JSON below under a new run-specific name and review it privately. No automatic overall PASS is produced: a successful check does not replace the remaining case evidence.\n'),
+                  code('print(json.dumps({"case": CASE_ID, "generated_utc": utc(), "results": RESULTS}, indent=2))\n'),
+                  md('## Public references\n\n' + '\n'.join('- [' + key + '](' + DOCS[key] + ')' for key in item['refs']) + '\n\nCopyright (c) 2026 Oracle and/or its affiliates. Licensed under the [Universal Permissive License](../../LICENSE.txt), Version 1.0.\n')]
+        for i, cell in enumerate(cells): cell['id'] = case.lower() + '-' + str(i)
+        nb = {'cells': cells, 'metadata': {'kernelspec': {'display_name': 'Python 3', 'language': 'python', 'name': 'python3'}, 'language_info': {'name': 'python'}}, 'nbformat': 4, 'nbformat_minor': 5}
+        (ROOT / item['file']).write_text(json.dumps(nb, indent=2) + '\n')
+        index.append({'case': case, 'title': item['title'], 'notebook': item['file'], 'objective': item['purpose'], 'kind': item['kind']})
+    (ROOT / 'case-index.json').write_text(json.dumps(index, indent=2) + '\n')
+    print('Built eight customer notebooks with embedded network diagrams.')
+
+if __name__ == '__main__':
+    build()
