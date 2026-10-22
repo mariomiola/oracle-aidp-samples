@@ -13,6 +13,32 @@ import pprint
 from pathlib import Path
 
 ROOT = Path(__file__).parent
+
+
+def documentation_section(filename, heading):
+    """Embed the maintained Markdown section so single-notebook imports work."""
+    text = (ROOT / 'docs' / filename).read_text()
+    section = text.split('\n## ' + heading + '\n', 1)[1].split('\n## ', 1)[0]
+    return section.strip() + '\n'
+
+
+CASE_HEADINGS = {
+    'V01': 'Amazon S3 through customer egress',
+    'V02': 'Customer Network Source and service gateway',
+    'V03': 'Cross-region Object Storage',
+    'V04': 'Database service private endpoint',
+    'V05': 'Service endpoint coverage',
+    'V06': 'DNS configuration operations',
+    'V07': 'Workload continuity',
+    'V08': 'Preserve the original integration',
+}
+VALIDATION_HEADINGS = {
+    'V05': 'Endpoint coverage and automatic inclusion',
+    'V06': 'Self-service configuration lifecycle',
+    'V07': 'Apply changes without a Spark restart',
+    'V08': 'Existing connectivity and legacy adoption',
+}
+
 DOCS = {
     'workspaces': 'https://docs.oracle.com/en/cloud/paas/ai-data-platform/aidug/workspaces.html',
     'sgw': 'https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/servicegateway.htm',
@@ -202,6 +228,23 @@ def build():
                  md('## Test helpers\n\nRun once to define this case\'s checks. Definitions make no network calls. AIDP uses Spark for the data-operation cells; no separate helper file is required.\n'), code(engine(case, item['title']), True),
                  md('## Your configuration\n\nFill the empty values from your own environment. Labels identify your evidence; they do not attach this notebook to a workspace or compute. The example CSV rows match fixtures/sample.csv. For a different small fixture, supply its known size and exact rows. Copy the database port from its actual descriptor; 1522 below is only a starting value.\n\nUse an existing catalog connection for ADB when available. Otherwise provide an existing supported wallet ZIP/TNS and a private runtime password; a wallet directory is not a ZIP file. Do not put passwords or access keys in CONFIG.\n'),
                  code('CASE_ID = ' + repr(case) + '\nCONFIG = ' + pprint.pformat(configuration(item['kind']), sort_dicts=False) + '\nRUN_LIVE = False\nRUN_EVIDENCE_CHECKS = False\nPHASE = "baseline"\nRESULTS = []\n')]
+        preparation = ('## IAM and network examples\n\n'
+                       'Preparation templates only: replace every angle-bracket placeholder privately. '
+                       'An administrator prepares the approved resources; this notebook applies no policies or network changes.\n\n'
+                       + documentation_section('network-and-iam-examples.md', 'Shared prerequisites')
+                       + '\n' + documentation_section('network-and-iam-examples.md', case + ' — ' + CASE_HEADINGS[case]))
+        # Include referenced preparation patterns in notebooks imported on their own.
+        related = {'V05': ('V02', 'V03', 'V04'), 'V06': ('V02',),
+                   'V07': ('V02', 'V03'), 'V08': ('V04', 'V06', 'V02')}
+        for reference in related.get(case, ()):
+            preparation += ('\n### Supporting pattern: ' + reference + '\n\n'
+                            + documentation_section('network-and-iam-examples.md',
+                                                    reference + ' — ' + CASE_HEADINGS[reference]))
+        cells.insert(3, md(preparation))
+        if case in VALIDATION_HEADINGS:
+            cells.insert(1, md('## Advanced DNS objective and coverage limits\n\n'
+                              + documentation_section('advanced-dns-validation.md',
+                                                      case + ' — ' + VALIDATION_HEADINGS[case])))
         if item['kind']:
             cells += [md('## Run a workload phase\n\nUse the same identity and client before and after a supported change. Only set RUN_LIVE=True when prerequisites are ready. For subsequent phases, change PHASE and rerun this cell without reinitializing RESULTS. The runtime password hook reads an already-provisioned environment variable; it never prints its value. The sample does not configure the S3A credential provider or install connector libraries.\n'),
                       code('import os\nRUNTIME = {}\nif os.environ.get("ADB_PASSWORD"):\n    RUNTIME["adb_password"] = os.environ["ADB_PASSWORD"]\nresult = run_case(CASE_ID, CONFIG, spark=globals().get("spark"), runtime=RUNTIME, live=RUN_LIVE, phase=PHASE)\nresult["acceptance"] = summarize(result)\nRESULTS.append(result)\nprint(json.dumps(result, indent=2))\n')]

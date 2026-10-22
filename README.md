@@ -65,6 +65,8 @@ Use the [customer connectivity guide](getting-started/private-workspace-connecti
 
 V01–V04 cover service connectivity scenarios. V05–V08 cover endpoint coverage, DNS configuration, and connection continuity. Live checks are disabled by default; enable them only after completing the selected notebook's prerequisites. The samples use resources you provide and do not provision cloud infrastructure. Record DNS resolution, connectivity, and application results separately when assessing a run.
 
+The guide explains [what V05–V08 validate and their coverage limits](getting-started/private-workspace-connectivity/docs/advanced-dns-validation.md), with [example IAM policies, routes, and security rules](getting-started/private-workspace-connectivity/docs/network-and-iam-examples.md) for preparing your environment. These details are also embedded in the applicable notebooks.
+
 | Connectivity notebook | Description |
 |---|---|
 | [V01 — Amazon S3 through customer egress](getting-started/private-workspace-connectivity/V01_Amazon_S3.ipynb) | Read a small private S3 object from an AIDP workspace through your approved outbound network path. |

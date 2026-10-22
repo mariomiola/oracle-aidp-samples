@@ -19,6 +19,25 @@ The notebooks do not provision resources, edit workspace DNS, change permissions
 
 V01-V04 are customer connectivity scenarios. V05-V08 check endpoint coverage, configuration behavior, continuity, and compatibility. A result from one scenario does not validate another.
 
+## Why run V05–V08?
+
+These cases examine additional Advanced DNS behavior beyond establishing a connection. See the [validation scope and manual acceptance steps](docs/advanced-dns-validation.md) for detailed procedures and limits, also embedded in the corresponding notebooks.
+
+| Case | Advanced DNS objective | What the current test establishes | Additional evidence needed |
+| --- | --- | --- | --- |
+| V05 | Automatic handling of eligible service endpoints, reducing manual entries and support requests. | Selected endpoint configuration and authenticated operations. | Eligibility, a baseline without a manual entry or historical override, and successful access before adding any entry. Coverage alone does not prove automatic inclusion. |
+| V06 | Self-service create/read/update/delete, validation and cancellation. | Supplied saved snapshots and input-validation observations. | Exercise Create/Edit flows where supported; review runtime effects separately. Preserving SCAN settings does not test SCAN functionality. |
+| V07 | Apply supported Advanced DNS changes without restarting Spark workloads. | DNS convergence, functional phases, application identity and lifecycle evidence. | Verify deployment support; record any older-cluster adoption restart separately before the measured run. |
+| V08 | Preserve existing integrations, including previously support-configured connectivity. | An existing database connection survives unrelated DNS edits. | Historical configuration provenance and an observed adoption transition without another allowlisting request. A general regression pass does not prove legacy adoption. |
+
+Use V01–V04 as the primary connectivity walkthroughs and V05–V08 as supporting operational validation. Automatic inclusion and legacy adoption remain **INCOMPLETE** without their additional evidence, even when the existing endpoint/regression checks succeed. The notebooks do not automate internal rollout, mapping cleanup, feature-flag or telemetry validation.
+
+## IAM policies and network construction examples
+
+Read [network and IAM preparation examples](docs/network-and-iam-examples.md) before enabling live checks. It includes placeholder statements for operator/private-network permissions, bucket-scoped OCI reads, a Network Source condition, AWS S3/KMS reads, a Streaming consume example, database login and evidence access. Route/security tables illustrate NAT egress, a regional service gateway, private database listeners, peering and resolver prerequisites.
+
+The examples distinguish the workspace operator, platform service and actual runtime signer. Select the matching policy subject and only the permissions needed for the chosen operation. An Advanced DNS entry grants no service authorization and creates no route. Existing platform setup and customer-specific service permissions still apply. Every notebook embeds its preparation examples so a single-file import retains them; these are documentation templates, not executed provisioning steps.
+
 ## Prepare your environment
 
 1. Choose your own AIDP instance, workspace and test compute. Enable **private network access** with the appropriate customer VCN, subnet and NSGs. Have the network administrator verify the [AIDP workspace prerequisites](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aidug/workspaces.html), service-required security rules, and IAM permissions.
@@ -85,6 +104,8 @@ Database username/password authentication and mTLS client-certificate authentica
 ## Maintain and verify the samples
 
 Keep this guide open as the entry point, or import README.md alongside a notebook if you want its relative back-link available in AIDP.
+
+Maintain rationale in `docs/advanced-dns-validation.md` and preparation templates in `docs/network-and-iam-examples.md`, then regenerate notebooks. The generator embeds the relevant sections, including supporting network patterns, rather than requiring customers to download the documentation directory.
 
 The notebooks use the Python standard library plus the existing Spark/connector runtime. No extra Python package is required by the harness. From this sample directory, regenerate notebooks after source edits:
 
