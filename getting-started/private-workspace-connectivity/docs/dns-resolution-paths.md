@@ -2,17 +2,16 @@
 
 ## Resolution paths
 
-Advanced DNS explicit entries and default private DNS proxy resolution serve different purposes. Determine the hostname's resolution path before editing the workspace.
+Advanced DNS lets you specify hostnames whose traffic needs to use your customer VCN. Private hostnames can already use customer DNS through the workspace's private connection.
 
-| Mechanism | Resolution and traffic behavior | What to configure or verify |
+| Your destination | How it is handled | What you need to do |
 | --- | --- | --- |
-| Explicit Advanced DNS entry | Provisioning resolves the supplied public hostname from the service environment and installs an explicit mapping. The runtime DNS answer directs application traffic through the workspace private connection into the customer VCN. | Use a service-resolvable hostname requiring customer-network routing, then verify provisioning, saved state, workload DNS and the authenticated operation. A customer-VM lookup alone does not establish service-side resolvability. |
-| Default private DNS proxy path | A private ADB hostname that the service resolver cannot resolve is handled through the private-endpoint DNS proxy and customer DNS context. | Verify customer DNS, private routes, listener security and the private descriptor. Do not add the private hostname solely because it is private. |
-| Regional service-zone allowance | A regional service-domain policy permits covered zones in the applicable context. | Verify the deployment's eligibility and endpoint. This is neither an automatically inserted workspace entry nor proof that the private DNS proxy supplied the answer. |
+| A hostname resolvable from the AIDP service network, whose traffic must use your customer VCN—for example, an S3 or public OCI service endpoint | An explicit Advanced DNS entry configures handling through the customer-network connection. | Add the actual hostname used by your application. Verify the required customer routes, security rules, and service permissions. |
+| A private hostname, such as a private ADB hostname, that the AIDP service resolver cannot resolve | DNS resolution uses the private-endpoint DNS proxy and customer DNS context by default. | Verify customer DNS, private connectivity, and destination access rules. An Advanced DNS entry is not required solely because the hostname is private. |
 
-![Explicit Advanced DNS handling and private DNS proxy resolution are separate from application traffic.](../assets/dns-resolution-paths.png)
+A private endpoint does not by itself determine whether an entry is needed. Use the actual connection hostname and its resolution behavior. Validate the connection with an authenticated application operation.
 
-Dashed blue arrows describe DNS/provisioning relationships; solid green arrows show application connections. The diagram is conceptual, not a packet trace. An address returned inside AIDP can be a service-managed mapping and need not equal the private address in the destination console. Keep using the original hostname for TLS server identity checks.
+Regional service-zone allowances are a separate policy consideration; they are not another resolution path or proof of an automatically inserted workspace entry. DNS configuration does not create routes or grant service permissions. Keep using the hostname for TLS identity checks, even when AIDP returns a mapped address.
 
 **Before testing:** record the complete DNS/SCAN list, endpoint type, existing overrides and effective client configuration. A successful query alone does not identify the resolution mechanism. Do not delete a shared override to create a clean baseline. Use an approved clean test workspace or mark the default-path claim **INCOMPLETE** when provenance cannot be established.
 

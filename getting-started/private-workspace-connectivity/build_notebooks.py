@@ -241,11 +241,7 @@ def build():
                             + documentation_section('network-and-iam-examples.md',
                                                     reference + ' — ' + CASE_HEADINGS[reference]))
         resolution = documentation_section('dns-resolution-paths.md', 'Resolution paths')
-        resolution = resolution.replace('../assets/dns-resolution-paths.png',
-                                        'attachment:dns-resolution-paths.png')
-        resolution_image = base64.b64encode((ROOT / 'assets' / 'dns-resolution-paths.png').read_bytes()).decode()
-        cells.insert(1, md('## DNS resolution path\n\n' + resolution,
-                           {'dns-resolution-paths.png': {'image/png': resolution_image}}))
+        cells.insert(1, md('## When do you need an Advanced DNS entry?\n\n' + resolution))
         cells.insert(4, md(preparation))
         if case in VALIDATION_HEADINGS:
             cells.insert(1, md('## Advanced DNS objective and coverage limits\n\n'

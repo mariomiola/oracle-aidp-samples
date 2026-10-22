@@ -62,9 +62,6 @@ class NotebookChecks(unittest.TestCase):
             image = base64.b64decode(cell['attachments']['network.png']['image/png'], validate=True)
             self.assertTrue(image.startswith(b'\x89PNG\r\n\x1a\n'))
             self.assertEqual(image, (ROOT / 'assets' / (item['case'].lower() + '-network.png')).read_bytes())
-            resolution = next(c for c in nb['cells'] if 'dns-resolution-paths.png' in c.get('attachments', {}))
-            self.assertEqual(base64.b64decode(resolution['attachments']['dns-resolution-paths.png']['image/png'], validate=True),
-                             (ROOT / 'assets' / 'dns-resolution-paths.png').read_bytes())
 
     def test_no_environment_specific_or_internal_material(self):
         files = [ROOT / 'README.md', ROOT / 'connectivity_checks.py', ROOT / 'build_notebooks.py']

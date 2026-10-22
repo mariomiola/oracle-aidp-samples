@@ -38,11 +38,9 @@ Read [network and IAM preparation examples](docs/network-and-iam-examples.md) be
 
 The examples distinguish the workspace operator, platform service and actual runtime signer. Select the matching policy subject and only the permissions needed for the chosen operation. An Advanced DNS entry grants no service authorization and creates no route. Existing platform setup and customer-specific service permissions still apply. Every notebook embeds its preparation examples so a single-file import retains them; these are documentation templates, not executed provisioning steps.
 
-## Reference the DNS resolution paths
+## Decide whether to add an Advanced DNS entry
 
 Read [DNS resolution paths](docs/dns-resolution-paths.md) before choosing a configuration change. Explicit mappings, default private DNS proxy resolution and regional service-zone allowances are separate mechanisms.
-
-![DNS resolution paths and separate application connections](assets/dns-resolution-paths.png)
 
 ## Prepare your environment
 
