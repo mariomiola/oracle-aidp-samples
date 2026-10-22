@@ -2,6 +2,8 @@
 
 This repository contains a curated collection of sample notebooks demonstrating how to build data pipelines, run machine learning workloads, and integrate AI capabilities using **Oracle AI Data Platform (AIDP) Workbench** — a unified, governed workspace for data engineering, ML, and AI development powered by Apache Spark.
 
+For private workspace network testing, start with the [Private Workspace Connectivity guide](getting-started/private-workspace-connectivity/README.md). It helps you choose among eight standalone use-case notebooks, each with customer network prerequisites, a routing diagram, and validation steps. See the [connectivity sample catalog](#private-workspace-connectivity) below.
+
 ## What is Oracle AI Data Platform Workbench?
 
 Oracle AI Data Platform Workbench is a unified, governed workspace for building, managing, and deploying AI and data-driven solutions. It brings together notebooks, agent development, orchestration, and catalog management in a single collaborative platform — empowering teams to explore data, fine-tune models, and operationalize AI with trust and speed.
@@ -16,7 +18,8 @@ Oracle AI Data Platform Workbench is a unified, governed workspace for building,
 oracle-aidp-samples/
 ├── getting-started/          # Foundational notebooks for new users
 │   ├── Delta_Lake/           # Delta Lake feature walkthroughs
-│   └── migration/            # Migrating workloads to AIDP
+│   ├── migration/            # Migrating workloads to AIDP
+│   └── private-workspace-connectivity/ # Customer network setup, diagrams, and tests
 ├── data-engineering/
 │   ├── ingestion/            # Connectors and data loading patterns
 │   ├── lineage/              # Reading and visualizing AIDP data lineage
@@ -54,20 +57,24 @@ Foundational examples to help you get up and running on AIDP Workbench.
 | [Native Apache Iceberg Table](getting-started/Native_Iceberg_Table.ipynb) | Create a native Iceberg table in a Standard catalog, then explore schema and partition evolution, MERGE, snapshots, and time travel. |
 | [Parameterize Notebooks with Native Widgets](getting-started/Native_Notebook_Widgets.ipynb) | Native notebook widgets (text, dropdown, combobox, multiselect), job and `notebook.run` parameter overrides, and a fail-fast check for job parameters a widget silently ignores. |
 
-Choose a private-network scenario with the [customer connectivity guide](getting-started/private-workspace-connectivity/README.md). Each notebook includes network setup, a routing diagram and independent evidence checks.
+The native Iceberg sample uses an existing AIDP Standard catalog. The Hadoop catalog sample under Data Engineering registers a separate Spark catalog on OCI Object Storage. Delta UniForm samples create Delta tables that publish Iceberg-compatible metadata.
+
+#### Private Workspace Connectivity
+
+Use the [customer connectivity guide](getting-started/private-workspace-connectivity/README.md) as the entry point: choose a use case, prepare your network and service resources, then import its notebook into AIDP Workbench. Each notebook is self-contained and includes network setup, a routing diagram, customer-supplied configuration, expected outcomes, and independent evidence checks.
+
+V01–V04 cover service connectivity scenarios. V05–V08 cover endpoint coverage, DNS configuration, and connection continuity. Live checks are disabled by default; enable them only after completing the selected notebook's prerequisites. The samples use resources you provide and do not provision cloud infrastructure. Record DNS resolution, connectivity, and application results separately when assessing a run.
 
 | Connectivity notebook | Description |
 |---|---|
-| [Amazon S3 through customer egress](getting-started/private-workspace-connectivity/V01_Amazon_S3.ipynb) | Read a small private S3 object from an AIDP workspace through your approved outbound network path. |
-| [Customer Network Source and service gateway](getting-started/private-workspace-connectivity/V02_Customer_Network_Source.ipynb) | Access an in-region OCI service without broadening its customer source-network restriction. |
-| [Cross-region OCI Object Storage](getting-started/private-workspace-connectivity/V03_Cross_Region_Object_Storage.ipynb) | Read a dataset in one OCI region while your AIDP workspace runs in another. |
-| [OCI service private endpoint](getting-started/private-workspace-connectivity/V04_Service_Private_Endpoint.ipynb) | Connect to an existing database through its actual service-private endpoint. |
-| [OCI service hostname coverage](getting-started/private-workspace-connectivity/V05_Service_Hostname_Coverage.ipynb) | Record which of your selected OCI service endpoints can be configured and accessed through the workspace. |
-| [DNS edits and input validation](getting-started/private-workspace-connectivity/V06_DNS_CRUD_And_Validation.ipynb) | Validate scoped add/edit/delete/cancel behavior and record input-validation outcomes. |
-| [DNS changes without a Spark restart](getting-started/private-workspace-connectivity/V07_DNS_Without_Restart.ipynb) | Measure workload continuity for a DNS edit that your deployment explicitly supports while compute is running. |
-| [Preserve an existing database connection](getting-started/private-workspace-connectivity/V08_Existing_Connection_Preservation.ipynb) | Check that unrelated workspace DNS edits preserve an already-working database connection. |
-
-The native Iceberg sample uses an existing AIDP Standard catalog. The Hadoop catalog sample under Data Engineering registers a separate Spark catalog on OCI Object Storage. Delta UniForm samples create Delta tables that publish Iceberg-compatible metadata.
+| [V01 — Amazon S3 through customer egress](getting-started/private-workspace-connectivity/V01_Amazon_S3.ipynb) | Read a small private S3 object from an AIDP workspace through your approved outbound network path. |
+| [V02 — Customer Network Source and service gateway](getting-started/private-workspace-connectivity/V02_Customer_Network_Source.ipynb) | Access an in-region OCI service without broadening its customer source-network restriction. |
+| [V03 — Cross-region OCI Object Storage](getting-started/private-workspace-connectivity/V03_Cross_Region_Object_Storage.ipynb) | Read a dataset in one OCI region while your AIDP workspace runs in another. |
+| [V04 — OCI service private endpoint](getting-started/private-workspace-connectivity/V04_Service_Private_Endpoint.ipynb) | Connect to an existing database through its actual service-private endpoint. |
+| [V05 — OCI service hostname coverage](getting-started/private-workspace-connectivity/V05_Service_Hostname_Coverage.ipynb) | Record which of your selected OCI service endpoints can be configured and accessed through the workspace. |
+| [V06 — DNS edits and input validation](getting-started/private-workspace-connectivity/V06_DNS_CRUD_And_Validation.ipynb) | Validate scoped add/edit/delete/cancel behavior and record input-validation outcomes. |
+| [V07 — DNS changes without a Spark restart](getting-started/private-workspace-connectivity/V07_DNS_Without_Restart.ipynb) | Measure workload continuity for a DNS edit that your deployment explicitly supports while compute is running. |
+| [V08 — Preserve an existing database connection](getting-started/private-workspace-connectivity/V08_Existing_Connection_Preservation.ipynb) | Check that unrelated workspace DNS edits preserve an already-working database connection. |
 
 #### Delta Lake
 
