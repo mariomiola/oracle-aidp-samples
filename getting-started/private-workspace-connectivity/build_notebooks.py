@@ -33,7 +33,7 @@ CASE_HEADINGS = {
     'V08': 'Preserve the original integration',
 }
 VALIDATION_HEADINGS = {
-    'V05': 'Endpoint coverage and automatic inclusion',
+    'V05': 'Endpoint coverage and default resolution',
     'V06': 'Self-service configuration lifecycle',
     'V07': 'Apply changes without a Spark restart',
     'V08': 'Existing connectivity and legacy adoption',
@@ -86,15 +86,15 @@ CASES = {
   'refs': ['workspaces', 'sgw', 'nat', 'hdfs']},
  'V04': {
   'title': 'OCI service private endpoint', 'file': 'V04_Service_Private_Endpoint.ipynb', 'kind': 'adb',
-  'purpose': 'Connect to an existing database through its actual service-private endpoint.',
+  'purpose': 'Query a private database through default private DNS proxy resolution without adding a test-specific Advanced DNS entry.',
   'setup': [
    ('Destination', 'Select an existing Autonomous Database private endpoint. Copy its private connection descriptor, hostname, listener port and service name from Database Connection. A regional public hostname protected by an ACL is a different case.'),
    ('Workspace and routing', 'Attach the workspace to the required customer private network. Verify the destination subnet route and return path. For a different VCN, arrange supported local/remote peering or DRG connectivity with non-overlapping ranges and the appropriate route tables.'),
-   ('DNS', 'Verify the private hostname resolves to the intended target in your customer network and that workspace FQDN provisioning/runtime DNS reach it correctly. Configure customer resolver/forwarding rules if your topology needs them. Stop on a private/split-DNS mismatch; do not substitute a public descriptor to pass the case.'),
+   ('DNS', 'For a private ADB hostname that the service resolver cannot resolve, use default private-endpoint DNS proxy resolution through customer DNS. Do not add an Advanced DNS entry solely because the hostname is private. Verify runtime resolution reaches the intended target. Configure customer resolver/forwarding rules if your topology needs them. Stop on a private/split-DNS mismatch; do not substitute a public descriptor to pass the case.'),
    ('Security', 'Allow the actual listener port through the relevant subnet/NSG/firewall rules and target access configuration, including any service-required workspace rules. NAT/internet routing is not needed for the illustrated private destination path.'),
    ('Authentication', 'Prefer an existing workspace external catalog connection, or provide an existing supported wallet ZIP/TNS plus a private runtime secret. Preserve certificate/server identity checks. A wallet-configured query or port 1522 alone does not prove client-certificate presentation.')],
-  'steps': ['Capture the verified private descriptor, network path and expected database identity.', 'Record baseline configuration, then add only the actual private FQDN when supported.', 'Run the read-only identity query with existing authentication and compare the expected instance.', 'Review private-target and any mTLS evidence separately; restore only test entries.'],
-  'acceptance': 'The read reaches the intended private database. Record endpoint-type evidence independently; if claiming mTLS, corroborate actual client-certificate use and effective connection settings.',
+  'steps': ['Capture the verified private descriptor, network path and expected database identity.', 'Capture complete DNS/SCAN settings and override provenance. Run the baseline without adding a test-specific Advanced DNS entry; use a clean approved workspace if existing overrides prevent attribution.', 'Run the read-only identity query with existing authentication and compare the expected instance.', 'Review customer DNS/proxy-path evidence, private target and any mTLS evidence separately. Preserve baseline configuration; classify default-path evidence as incomplete if existing overrides cannot be excluded.'],
+  'acceptance': 'The read reaches the intended private database without a newly added explicit entry. Confirm override provenance and the private DNS proxy path before attributing success to default resolution. Record endpoint-type evidence independently; if claiming mTLS, corroborate actual client-certificate use and effective connection settings.',
   'refs': ['workspaces', 'adb']},
  'V05': {
   'title': 'OCI service hostname coverage', 'file': 'V05_Service_Hostname_Coverage.ipynb', 'kind': None,
@@ -102,17 +102,17 @@ CASES = {
   'setup': [
    ('Inventory', 'Select actual resources you own. Possible coverage includes Autonomous Database, Streaming, OpenSearch, PostgreSQL, Data Flow interactive endpoints and Kafka endpoints. This is a test inventory, not a guarantee of automatic DNS insertion or a service-wide exception policy.'),
    ('Route per service', 'Use each resource\'s real connection descriptor. Verify whether it needs an in-region service gateway, customer egress or a private route. Do not assume all selected services share a gateway or listener port.'),
-   ('DNS', 'Use actual resource FQDNs rather than probing only a service-zone root. Record saved workspace configuration and runtime results for each resource.'),
+   ('DNS', 'Use actual resource FQDNs rather than probing only a service-zone root. Classify explicit mappings, regional service-zone allowances and default private DNS proxy behavior separately. Record saved configuration, override provenance and runtime results.'),
    ('Security and service operation', 'Verify each service\'s firewall/NSG and authorization prerequisites and use a small supported read/query operation. Record unavailable fixtures as blocked coverage, not success.'),
    ('Change control', 'Use owned test endpoints and restore only entries introduced for this coverage run. Record any additional support/configuration action required rather than assuming none.')],
-  'steps': ['Fill required_services and one actual endpoint record for each selected service.', 'Capture accepted/rejected FQDN operations and reopened saved configuration per host.', 'Perform each service\'s existing authenticated operation and reference its evidence.', 'Evaluate the recorded coverage, review endpoint scope, and restore the baseline.'],
+  'steps': ['Fill required_services and one actual endpoint record for each selected service.', 'Capture baseline and override provenance per host; classify default private proxy, service-zone permission and explicit mapping separately. Record accepted/rejected operations only where an explicit entry is required.', 'Perform each service\'s existing authenticated operation and reference its evidence.', 'Evaluate the recorded coverage, review endpoint scope, and restore the baseline.'],
   'acceptance': 'Each selected endpoint has configuration and authenticated-operation evidence. Do not generalize an endpoint result to an entire DNS zone or all service instances.',
   'refs': ['workspaces', 'sgw']},
  'V06': {
   'title': 'DNS edits and input validation', 'file': 'V06_DNS_CRUD_And_Validation.ipynb', 'kind': None,
   'purpose': 'Validate scoped add/edit/delete/cancel behavior and record input-validation outcomes.',
   'setup': [
-   ('Owned endpoints', 'Prepare two owned, resolvable disposable hostnames A/B and an approved existing route to their small fixtures. For an optional partial-provisioning observation, use an owned deliberately unresolved name U.'),
+   ('Owned endpoints', 'Prepare two owned disposable hostnames A/B that are resolvable from the service environment for explicit Advanced DNS provisioning and an approved existing route to their small fixtures. For an optional partial-provisioning observation, use an owned deliberately unresolved name U.'),
    ('Route and security', 'Verify A/B are reachable through the workspace\'s existing customer path and permitted ports. DNS edits do not create routes, gateways or authorization. Keep those controls fixed during the comparison.'),
    ('Workspace editing', 'Capture the complete DNS list and SCAN settings first. Follow the deployment\'s edit prerequisites; current public documentation says most network changes require stopped compute. Do not stop another user\'s resource to perform this sample.'),
    ('Input behavior', 'Use the FQDN field\'s published format and current UI validation. Record duplicate/normalization and partially failed-request behavior from actual readback rather than assuming atomic rollback or a universal normalization rule.')],
@@ -124,7 +124,7 @@ CASES = {
   'purpose': 'Measure workload continuity for a DNS edit that your deployment explicitly supports while compute is running.',
   'setup': [
    ('Deployment capability', 'Confirm this particular DNS operation is supported without stopping compute in your deployment. Public documentation says most network changes require stopped clusters. If the UI requires a stop or the operation is unsupported, mark this case BLOCKED; do not bypass that requirement.'),
-   ('Network baseline', 'Use owned A/B endpoints and an existing working customer route, security rules and authenticated fixture. Keep gateways, listener ports, identity and service policy unchanged across phases.'),
+   ('Network baseline', 'Use owned, service-resolvable public A/B hostnames suitable for explicit Advanced DNS provisioning and an existing working customer route, security rules and authenticated fixture. Private-only names exercise the default proxy path instead. Keep gateways, listener ports, identity and service policy unchanged across phases.'),
    ('DNS evidence', 'Capture authoritative workspace mapping/readback for each phase. Record convergence time as observed; no universal propagation deadline is assumed. Do not copy a translated address from another workspace.'),
    ('Runtime evidence', 'Use the same dedicated Spark session. Record application ID, SELECT 1, workload result and independent compute lifecycle evidence before/add/edit/delete/restored. A stable display name alone is insufficient.')],
   'steps': ['First verify the capability prerequisite and capture the before phase.', 'For each permitted add/edit/delete operation, keep the same session and record the reader, DNS mapping and application identity.', 'Capture lifecycle events across the entire run, including any stop/start/replacement.', 'Restore the original configuration. If a prerequisite adoption restart is needed, handle it outside this measured run and start a separate test afterward.'],
@@ -240,7 +240,13 @@ def build():
             preparation += ('\n### Supporting pattern: ' + reference + '\n\n'
                             + documentation_section('network-and-iam-examples.md',
                                                     reference + ' — ' + CASE_HEADINGS[reference]))
-        cells.insert(3, md(preparation))
+        resolution = documentation_section('dns-resolution-paths.md', 'Resolution paths')
+        resolution = resolution.replace('../assets/dns-resolution-paths.png',
+                                        'attachment:dns-resolution-paths.png')
+        resolution_image = base64.b64encode((ROOT / 'assets' / 'dns-resolution-paths.png').read_bytes()).decode()
+        cells.insert(1, md('## DNS resolution path\n\n' + resolution,
+                           {'dns-resolution-paths.png': {'image/png': resolution_image}}))
+        cells.insert(4, md(preparation))
         if case in VALIDATION_HEADINGS:
             cells.insert(1, md('## Advanced DNS objective and coverage limits\n\n'
                               + documentation_section('advanced-dns-validation.md',

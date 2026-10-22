@@ -11,13 +11,13 @@ The notebooks do not provision resources, edit workspace DNS, change permissions
 | V01 | Read a private S3 object through customer-controlled outbound connectivity. | [Amazon S3](V01_Amazon_S3.ipynb) |
 | V02 | Preserve a customer Network Source restriction while accessing an in-region OCI service. | [Network Source and service gateway](V02_Customer_Network_Source.ipynb) |
 | V03 | Read OCI Object Storage in a region different from your AIDP workspace. | [Cross-region Object Storage](V03_Cross_Region_Object_Storage.ipynb) |
-| V04 | Query an existing database through its actual service-private endpoint. | [Service private endpoint](V04_Service_Private_Endpoint.ipynb) |
+| V04 | Query a private database through default private DNS proxy resolution without adding an Advanced DNS entry. | [Service private endpoint](V04_Service_Private_Endpoint.ipynb) |
 | V05 | Record configuration and authenticated access for the OCI service endpoints you select. | [Service hostname coverage](V05_Service_Hostname_Coverage.ipynb) |
 | V06 | Check scoped DNS add/edit/delete/cancel and input-validation behavior. | [DNS edits and validation](V06_DNS_CRUD_And_Validation.ipynb) |
 | V07 | Measure continuity for a DNS change that your deployment supports without stopping compute. | [DNS without a Spark restart](V07_DNS_Without_Restart.ipynb) |
 | V08 | Preserve a working database connection while changing unrelated DNS entries. | [Existing connection preservation](V08_Existing_Connection_Preservation.ipynb) |
 
-V01-V04 are customer connectivity scenarios. V05-V08 check endpoint coverage, configuration behavior, continuity, and compatibility. A result from one scenario does not validate another.
+V01–V03 demonstrate explicit Advanced DNS connectivity scenarios. V04 is a companion private-endpoint test of default DNS proxy resolution, without adding a test-specific Advanced DNS entry. V05-V08 check endpoint coverage, configuration behavior, continuity, and compatibility. A result from one scenario does not validate another.
 
 ## Why run V05–V08?
 
@@ -25,12 +25,12 @@ These cases examine additional Advanced DNS behavior beyond establishing a conne
 
 | Case | Advanced DNS objective | What the current test establishes | Additional evidence needed |
 | --- | --- | --- | --- |
-| V05 | Automatic handling of eligible service endpoints, reducing manual entries and support requests. | Selected endpoint configuration and authenticated operations. | Eligibility, a baseline without a manual entry or historical override, and successful access before adding any entry. Coverage alone does not prove automatic inclusion. |
+| V05 | Distinguish default resolution, service-zone allowances and explicit mappings. | Selected endpoint configuration and authenticated operations. | Eligibility, override history and independent evidence identifying the mechanism. Success without a user entry does not establish automatic entry insertion. |
 | V06 | Self-service create/read/update/delete, validation and cancellation. | Supplied saved snapshots and input-validation observations. | Exercise Create/Edit flows where supported; review runtime effects separately. Preserving SCAN settings does not test SCAN functionality. |
 | V07 | Apply supported Advanced DNS changes without restarting Spark workloads. | DNS convergence, functional phases, application identity and lifecycle evidence. | Verify deployment support; record any older-cluster adoption restart separately before the measured run. |
 | V08 | Preserve existing integrations, including previously support-configured connectivity. | An existing database connection survives unrelated DNS edits. | Historical configuration provenance and an observed adoption transition without another allowlisting request. A general regression pass does not prove legacy adoption. |
 
-Use V01–V04 as the primary connectivity walkthroughs and V05–V08 as supporting operational validation. Automatic inclusion and legacy adoption remain **INCOMPLETE** without their additional evidence, even when the existing endpoint/regression checks succeed. The notebooks do not automate internal rollout, mapping cleanup, feature-flag or telemetry validation.
+Use V01–V03 as explicit Advanced DNS walkthroughs, V04 as a default private DNS companion and V05–V08 as supporting operational validation. Automatic inclusion and legacy adoption remain **INCOMPLETE** without their additional evidence, even when the existing endpoint/regression checks succeed. The notebooks do not automate internal rollout, mapping cleanup, feature-flag or telemetry validation.
 
 ## IAM policies and network construction examples
 
@@ -38,11 +38,17 @@ Read [network and IAM preparation examples](docs/network-and-iam-examples.md) be
 
 The examples distinguish the workspace operator, platform service and actual runtime signer. Select the matching policy subject and only the permissions needed for the chosen operation. An Advanced DNS entry grants no service authorization and creates no route. Existing platform setup and customer-specific service permissions still apply. Every notebook embeds its preparation examples so a single-file import retains them; these are documentation templates, not executed provisioning steps.
 
+## Reference the DNS resolution paths
+
+Read [DNS resolution paths](docs/dns-resolution-paths.md) before choosing a configuration change. Explicit mappings, default private DNS proxy resolution and regional service-zone allowances are separate mechanisms.
+
+![DNS resolution paths and separate application connections](assets/dns-resolution-paths.png)
+
 ## Prepare your environment
 
 1. Choose your own AIDP instance, workspace and test compute. Enable **private network access** with the appropriate customer VCN, subnet and NSGs. Have the network administrator verify the [AIDP workspace prerequisites](https://docs.oracle.com/en/cloud/paas/ai-data-platform/aidug/workspaces.html), service-required security rules, and IAM permissions.
 2. Read **Network setup** in the chosen notebook. Supply actual resource hostnames and connection details from the destination service; do not copy an address from another workspace. A translated DNS answer can be normal and is a destination, not a source address to add to a policy.
-3. Verify existing routes, return traffic, security rules, name resolution and service permissions independently. Advanced DNS configuration does not create any of those controls. For private/split DNS, confirm that both the configuration operation and runtime resolution select the intended private destination.
+3. Verify existing routes, return traffic, security rules, name resolution and service permissions independently. Advanced DNS configuration does not create any of those controls. For explicit entries, establish service-side resolvability and verify provisioning/readback. For private ADB names using the default proxy, verify customer DNS and runtime resolution without adding an entry merely because the endpoint is private.
 4. Record the original workspace DNS/SCAN settings, route/policy references and compute lifecycle state. Use only scoped, disposable changes that your environment permits.
 5. Follow the workspace UI's prerequisites before saving a change. The public documentation states that **most network changes require stopped compute**. V07 is conditional on support for the particular live DNS operation; do not bypass a stop requirement to run it.
 
@@ -68,11 +74,11 @@ A service gateway can reach supported Oracle services **in the same region** ove
 
 This example uses an approved customer egress path to the remote public endpoint. A region A service gateway is not a route to region B. Select the actual remote endpoint and a fresh client where needed; an already cached filesystem may retain an older endpoint. Keep an independent in-region control fixture. See [NAT gateway](https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/NATgateway.htm) and [HDFS endpoint configuration](https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/hdfsconnector.htm).
 
-### Service private endpoint
+### Service private endpoint: default private DNS proxy
 
 ![Workspace private connection to an actual service private endpoint](assets/v04-network.png)
 
-The workspace private connection and the service's private endpoint are distinct components. Use the service's private descriptor, verified customer DNS, private routes and listener security. Another VCN requires the appropriate peering/DRG route and return path. A public ADB endpoint with an ACL does not substitute for this case. Preserve the original authentication and certificate checking. See [Autonomous Database connection modes](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/connect-introduction.html).
+For a private ADB hostname not resolvable by the service resolver, DNS uses the private-endpoint proxy and customer DNS context by default. Run V04 without adding a test-specific Advanced DNS entry, and establish whether existing overrides affect the baseline. The workspace private connection and the service's private endpoint are distinct components. Use the service's private descriptor, verified customer DNS, private routes and listener security. Another VCN requires the appropriate peering/DRG route and return path. A public ADB endpoint with an ACL does not substitute for this case. Preserve the original authentication and certificate checking. See [Autonomous Database connection modes](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/connect-introduction.html).
 
 ## Run the chosen notebook
 
@@ -81,7 +87,7 @@ The workspace private connection and the service's private endpoint are distinct
 3. For object reads, use a CSV fixture no larger than 64 KiB with known exact rows. The optional [synthetic fixture](fixtures/sample.csv) has two rows. Verify its size independently, upload it using your normal approved tooling, and supply the object URI, namespace/region/endpoint and expected values. No object is uploaded by the notebook.
 4. For ADB, prefer an existing workspace external catalog connection. Otherwise use an existing supported wallet ZIP, TNS alias and private runtime secret. A wallet directory is not a ZIP file. For S3, configure a supported S3A credential provider and runtime-compatible libraries before comparing network behavior. Never save credential values in notebook source or commit executed outputs containing private details.
 5. Run the helpers cell once. Set `RUN_LIVE=True` only when the workload prerequisites are ready. For manual Workbench/evidence scenarios, record actual observations before enabling `RUN_EVIDENCE_CHECKS`. Both flags default to `False`.
-6. Record a baseline, apply only the approved scoped change, reopen saved settings and repeat the same client/identity. For repeated phases, preserve `RESULTS`; do not rerun the configuration cell and erase earlier observations.
+6. Record a baseline, apply only the approved scoped change, reopen saved settings and repeat the same client/identity. V04 records its default-path baseline without an explicit DNS edit. For repeated change phases in other cases, preserve `RESULTS`; do not rerun the configuration cell and erase earlier observations.
 7. Restore only changes introduced by the run, repeat the original control, and export a new run-specific evidence file privately. Preserve resources already in use.
 
 The CSV check compares an exact row multiset, so order differences are allowed but missing, extra or duplicated rows fail. The ADB check runs a read-only database-identity query. Driver DNS/TCP results describe the driver; a Spark read exercises its distributed reader but does not prove every executor or a particular network path was covered.

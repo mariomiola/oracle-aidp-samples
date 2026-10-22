@@ -49,6 +49,48 @@ def build(case, data):
     (ROOT / 'assets').mkdir(exist_ok=True)
     image.save(ROOT / 'assets' / (case.lower() + '-network.png'))
 
+def resolution_diagram(private_only=False):
+    """Separate configuration/DNS relationships from application connections."""
+    width, height = 1800, (650 if private_only else 1040)
+    image = Image.new('RGB', (width, height), 'white')
+    d = ImageDraw.Draw(image)
+    d.text((35, 25), 'V04 - Default private DNS proxy path' if private_only else 'DNS resolution paths and application connections', fill='#183d4a', font=font(34, True))
+    d.text((35, 80), 'Conceptual paths: dashed blue = DNS/provisioning; solid green = application connection.', fill='#4e626b', font=font(22))
+
+    def row(y, labels, color, dashed=False):
+        for i, label in enumerate(labels):
+            x = 35 + i * 355
+            d.rounded_rectangle((x, y, x+305, y+95), radius=10, fill='#f4f8fa' if dashed else '#edf6f0', outline=color, width=2)
+            for j, line in enumerate(label.split('\n')):
+                bounds = d.textbbox((0, 0), line, font=font(23, True))
+                assert bounds[2]-bounds[0] < 295, line
+                d.text((x+152-(bounds[2]-bounds[0])/2, y+19+j*29), line, fill='#203d43', font=font(23, True))
+            if i < 4:
+                a, b, mid = x+305, x+350, y+47
+                if dashed:
+                    for point in range(a,b,10): d.line((point,mid,min(point+5,b),mid), fill=color, width=3)
+                else: d.line((a,mid,b,mid), fill=color,width=3)
+                d.polygon([(b,mid),(b-10,mid-7),(b-10,mid+7)],fill=color)
+
+    offset = 0
+    if not private_only:
+        d.text((35, 142), 'A. Explicit Advanced DNS: service-resolvable public hostname requiring customer-VCN routing', fill='#246585', font=font(26, True))
+        row(195, ['Public client\nhostname', 'Service-side\nprovisioning resolution', 'Explicit hostname\nmapping', 'Runtime mapped\nDNS answer', 'Client uses\noriginal hostname'], '#246585', True)
+        row(330, ['AIDP application', 'Workspace private\nconnection', 'Customer subnet', 'Approved customer\nroute', 'Public service\nendpoint'], '#307160')
+        d.text((35, 450), 'Provisioning and runtime DNS are distinct steps; inspect mapping/readback and actual workload results.', fill='#425b65', font=font(22))
+        offset = 405
+    d.text((35, 145+offset), 'B. Private ADB hostname unresolved by service resolver: default private DNS proxy path', fill='#246585', font=font(26, True))
+    row(205+offset, ['Private ADB\nhostname', 'Workspace DNS\nresolution', 'Private-endpoint\nDNS proxy', 'Customer DNS\nresolver', 'Private target\nanswer / mapping'], '#246585', True)
+    row(345+offset, ['AIDP application', 'Workspace private\nconnection', 'Customer subnet', 'Private routes\nand target security', 'ADB private\nendpoint'], '#307160')
+    d.text((35, 475+offset), 'Add no test-specific Advanced DNS entry solely because the hostname is private. Check existing overrides.', fill='#425b65', font=font(22))
+    d.text((35, 520+offset), 'Keep the hostname for TLS identity checks. A mapped DNS answer need not equal the console private IP.', fill='#425b65', font=font(22))
+    d.text((35, height-48), 'Regional service-zone allowances are a separate policy mechanism; none of these paths grants service permissions.', fill='#425b65', font=font(21))
+    image.save(ROOT / 'assets' / ('v04-network.png' if private_only else 'dns-resolution-paths.png'))
+
+
 if __name__ == '__main__':
     for key, value in DIAGRAMS.items():
-        build(key, value)
+        if key != 'V04':
+            build(key, value)
+    resolution_diagram()
+    resolution_diagram(private_only=True)

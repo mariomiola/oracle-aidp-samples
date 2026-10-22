@@ -24,7 +24,7 @@
     "case": "V04",
     "title": "OCI service private endpoint",
     "notebook": "V04_Service_Private_Endpoint.ipynb",
-    "objective": "Connect to an existing database through its actual service-private endpoint.",
+    "objective": "Query a private database through default private DNS proxy resolution without adding a test-specific Advanced DNS entry.",
     "kind": "adb"
   },
   {
